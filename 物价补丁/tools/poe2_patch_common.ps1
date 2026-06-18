@@ -30,6 +30,37 @@
     }
 }
 
+function Get-Poe2GameMode {
+    param([Parameter(Mandatory = $true)][string]$Poe2Dir)
+
+    $ContentGgpk = Join-Path $Poe2Dir "Content.ggpk"
+    $Bundles2Index = Join-Path $Poe2Dir "Bundles2\_.index.bin"
+
+    if (Test-Path -LiteralPath $ContentGgpk -PathType Leaf) {
+        return "GGPK"
+    }
+    elseif (Test-Path -LiteralPath $Bundles2Index -PathType Leaf) {
+        return "Bundles2"
+    }
+    else {
+        throw "无法检测游戏模式：请确保物价补丁文件夹放在游戏根目录。找不到 Content.ggpk 或 Bundles2\_.index.bin"
+    }
+}
+
+function Get-Bundles2Paths {
+    param([Parameter(Mandatory = $true)][string]$Poe2Dir)
+
+    $Bundles2Dir = Join-Path $Poe2Dir "Bundles2"
+    $IndexBin = Join-Path $Bundles2Dir "_.index.bin"
+
+    return @{
+        Bundles2Dir  = $Bundles2Dir
+        IndexBin     = $IndexBin
+        EnBaseItems  = "data/balance/baseitemtypes.datc64"
+        TcBaseItems  = "data/balance/traditional chinese/baseitemtypes.datc64"
+    }
+}
+
 function Test-Poe2ReleaseMode {
     return ($env:POE2_PATCH_RELEASE -eq "1")
 }

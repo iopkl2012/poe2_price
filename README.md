@@ -28,10 +28,11 @@
 
 ## ✨ 功能特点
 
-- 🔍 **自动读取** 游戏 `Content.ggpk` 中的物品名表
+- 🔍 **自动读取** 游戏 `Content.ggpk`（官方版）或 `Bundles2`（Steam/Epic版）中的物品名表
 - 💰 **联网抓取** poe2scout 实时价格数据
 - 🏷️ **自动标注** 将价格追加到物品名中，游戏内一目了然
 - ↩️ **一键还原** 随时恢复原版物品名，安全无残留
+- 🎮 **双平台支持** 兼容官方版（GGPK格式）和 Steam/Epic 版（Bundles2 格式）
 - 📦 **免环境** 发布版内置 .NET 8 + Python 3.10，普通用户开箱即用
 
 ---
@@ -44,15 +45,19 @@
 
 ### 2. 安装
 
-解压后将 `物价补丁` 文件夹放到 POE2 **游戏根目录**，与 `Content.ggpk` 同级：
+解压后将 `物价补丁` 文件夹放到 POE2 **游戏根目录**：
 
 ```text
-D:\Path of Exile 2\
-├── Content.ggpk
+<Path of Exile 2 游戏根目录>\
+├── Content.ggpk          # 官方版有此文件
+├── Bundles2\             # Steam/Epic版有此目录
+│   └── _.index.bin
 └── 物价补丁\
     ├── 一键更新物价补丁.exe
     └── 一键还原物价补丁.exe
 ```
+
+> 💡 **提示：** 工具会自动检测游戏版本（官方版 GGPK 或 Steam/Epic版 Bundles2），无需手动选择。
 
 ### 3. 使用
 
@@ -63,6 +68,35 @@ D:\Path of Exile 2\
 ---
 
 ## 🛠️ 开发者指南
+
+### Vibe Coding 指南
+
+本项目包含 `agent/` 目录，专为 AI 助手（如 Claude、ChatGPT）设计，帮助 AI 快速理解项目结构并协助开发。
+
+**使用方法：**
+
+1. **让 AI 阅读 `agent/index.md`** - 这是项目的主索引文档，包含：
+   - 项目设计目的
+   - 架构模块简介
+   - 各模块的目录结构和功能说明
+
+2. **AI 自动维护变更记录** - 每次对模块进行修改后，AI 会：
+   - 在 `agent/<模块名>/` 目录下创建变更记录文件
+   - 文件命名格式：`YYYY-MM-DD-变更摘要.md`
+
+3. **快速上手开发** - 告诉 AI：
+   ```
+   请阅读 agent/index.md，帮我理解项目结构，然后协助我开发 <功能>
+   ```
+
+**目录结构：**
+```text
+agent/
+├── index.md                    # 项目主索引（AI 首先阅读此文件）
+└── 项目模块/                 # AI自主维护
+```
+
+> 💡 **提示：** `agent/` 目录由 AI 自主维护，开发者无需手动编辑。
 
 ### 构建要求
 
@@ -81,9 +115,13 @@ D:\Path of Exile 2\
 .
 ├── 物价补丁/
 │   ├── tools/                      # PowerShell & Python 核心脚本
-│   │   └── GGPKExtractor/          # 从 Content.ggpk 提取数据的工具
-│   └── 一键安装特殊补丁工具/        # 把补丁 zip 写回 Content.ggpk
+│   │   ├── GGPKExtractor/          # 从 Content.ggpk 提取数据的工具（官方版）
+│   │   └── BundleExtractor/        # 从 Bundles2 提取数据的工具（Steam/Epic版）
+│   └── 一键安装特殊补丁工具/        # 把补丁写入游戏文件
+│       ├── PatchBundledGGPK3.dll   # 官方版补丁安装工具
+│       └── PatchBundle3.exe        # Steam/Epic版补丁安装工具
 └── build/
+    ├── BundleExtractor/            # Steam/Epic版提取工具的 C# 源码
     ├── Poe2PatchLauncher/          # 一键更新/还原 exe 的 C# 启动器源码
     ├── PayloadPacker/              # 把脚本 payload 加密进启动器的工具
     ├── make_release.ps1            # 完整发布版打包脚本
@@ -112,9 +150,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build\make_release.ps1 -Sk
 
 | 参数 | 说明 |
 |------|------|
-| `-SkipExtract` | 跳过从 `Content.ggpk` 提取数据，使用已有缓存 |
-| `-NoInstall` | 只生成补丁 zip，不写入 `Content.ggpk` |
+| `-SkipExtract` | 跳过从游戏文件提取数据，使用已有缓存 |
+| `-NoInstall` | 只生成补丁 zip，不写入游戏文件 |
 | `-NoPoe2dbFallback` | 不请求 poe2db 兜底翻译 |
+| `-Poe2Dir <路径>` | 手动指定游戏根目录（默认自动检测） |
 
 ---
 

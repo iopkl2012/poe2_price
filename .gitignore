@@ -1,0 +1,19 @@
+# 编译输出（保留源码）
+build/**/bin/
+build/**/obj/
+build/**/publish/
+
+# 运行时输出
+物价补丁/output/
+
+# 生成的补丁文件
+物价补丁/物价补丁.zip
+物价补丁/还原物价补丁.zip
+物价补丁/一键安装特殊补丁工具/物价补丁.zip
+
+# 临时文件
+*.tmp
+*.log
+
+# VS Code 配置
+.vscode/

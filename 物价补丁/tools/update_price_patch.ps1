@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Poe2Dir = "",
     [switch]$SkipExtract,
     [switch]$NoOpenTool,
@@ -186,13 +186,18 @@ function Ensure-RestoreZip {
     return (Resolve-Path -LiteralPath $RestoreOutZip).Path
 }
 
+$GameMode = Get-Poe2GameMode -Poe2Dir $Poe2Dir
 $ContentGgpk = Join-Path $Poe2Dir "Content.ggpk"
+$Bundles2Paths = Get-Bundles2Paths -Poe2Dir $Poe2Dir
 $LocalExtractorDll = Join-Path $PublicToolsRoot "GGPKExtractor\GGPKExtractor.dll"
 $LocalExtractorExe = Join-Path $PublicToolsRoot "GGPKExtractor\GGPKExtractor.exe"
 $FallbackExtractor = Join-Path $Poe2Dir "tiaoshi\extractor_tool\GGPKExtractor\bin\Release\net8.0-windows\GGPKExtractor.exe"
 $BundledInstallerDir = Join-Path $RepoRoot (Get-Poe2PatchName "InstallerDir")
 $BundledPatchDll = Join-Path $BundledInstallerDir "PatchBundledGGPK3.dll"
 $BundledPatchRuntimeConfig = Join-Path $BundledInstallerDir "PatchBundledGGPK3.runtimeconfig.json"
+$BundledBundlePatchExe = Join-Path $BundledInstallerDir "PatchBundle3.exe"
+$BundledBundleExtractorExe = Join-Path $BundledInstallerDir "BundleExtractor\BundleExtractor.exe"
+$BundledOodleDll = Join-Path $BundledInstallerDir "BundleExtractor\oo2core.dll"
 $ExtractorUsesDotnet = $false
 if (Test-Path -LiteralPath $LocalExtractorDll -PathType Leaf) {
     $Extractor = $LocalExtractorDll
@@ -223,11 +228,32 @@ $SummaryJson = Join-Path $OutDir "summary.json"
 Write-Host "POE2 price patch updater" -ForegroundColor Green
 Write-Host "Game dir : $Poe2Dir"
 Write-Host "Patch dir: $RepoRoot"
+Write-Host "Mode     : $GameMode" -ForegroundColor Cyan
 
-Assert-File $ContentGgpk "Content.ggpk"
-Assert-File $Extractor "GGPKExtractor"
-Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
-Assert-File $BundledPatchRuntimeConfig "PatchBundledGGPK3.runtimeconfig.json"
+if ($GameMode -eq "GGPK") {
+    Assert-File $ContentGgpk "Content.ggpk"
+    Assert-File $Extractor "GGPKExtractor"
+    Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
+    Assert-File $BundledPatchRuntimeConfig "PatchBundledGGPK3.runtimeconfig.json"
+}
+else {
+    # Bundles2 (Steam/Epic) 模式
+    Assert-File $Bundles2Paths.IndexBin "Bundles2 _.index.bin"
+    # 检查 BundleExtractor
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        $BundledBundleExtractorExe = Join-Path $CodeToolsRoot "BundleExtractor\BundleExtractor.exe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        throw "Missing BundleExtractor.exe: $BundledBundleExtractorExe"
+    }
+    # 检查 oo2core.dll
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        $BundledOodleDll = Join-Path $CodeToolsRoot "BundleExtractor\oo2core.dll"
+    }
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        throw "Missing oo2core.dll: $BundledOodleDll"
+    }
+}
 Assert-File (Join-Path $CodeToolsRoot "build_poe2scout_price_patch.py") "price fetch script"
 Assert-File (Join-Path $CodeToolsRoot "poe2_name_price_patch.py") "patch build script"
 $Dotnet = Ensure-DotNet8Runtime -RepoRoot $RepoRoot
@@ -235,29 +261,64 @@ Stop-LegacyInstallerProcesses
 Remove-LegacyFiles
 
 if (-not $SkipExtract) {
-    Write-Step "Extract latest BaseItemTypes from Content.ggpk"
     New-Item -ItemType Directory -Force -Path $LatestDir | Out-Null
-    try {
-        if ($ExtractorUsesDotnet) {
-            & $Dotnet $Extractor $ContentGgpk $LatestDir *> $ExtractLog
+    
+    if ($GameMode -eq "GGPK") {
+        Write-Step "Extract latest BaseItemTypes from Content.ggpk"
+        try {
+            if ($ExtractorUsesDotnet) {
+                & $Dotnet $Extractor $ContentGgpk $LatestDir *> $ExtractLog
+            }
+            else {
+                & $Extractor $ContentGgpk $LatestDir *> $ExtractLog
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "GGPKExtractor exit code: $LASTEXITCODE"
+            }
+            Write-Host "Extracted to: $LatestDir"
         }
-        else {
-            & $Extractor $ContentGgpk $LatestDir *> $ExtractLog
+        catch {
+            Write-Warning "Extract failed: $($_.Exception.Message)"
+            Write-Warning "If the game is running, close it and run this updater again."
+            if ((Test-Path -LiteralPath $EnBaseItems) -and (Test-Path -LiteralPath $TcBaseItems)) {
+                Write-Warning "Using existing dat_files_latest instead."
+            }
+            else {
+                throw "No usable BaseItemTypes files. Log: $ExtractLog"
+            }
         }
-        if ($LASTEXITCODE -ne 0) {
-            throw "GGPKExtractor exit code: $LASTEXITCODE"
-        }
-        Write-Host "Extracted to: $LatestDir"
     }
-    catch {
-        Write-Warning "Extract failed: $($_.Exception.Message)"
-        Write-Warning "If the game is running, close it and run this updater again."
-        if ((Test-Path -LiteralPath $EnBaseItems) -and (Test-Path -LiteralPath $TcBaseItems)) {
-            Write-Warning "Using existing dat_files_latest instead."
+    else {
+        Write-Step "Extract latest BaseItemTypes from Bundles2 using BundleExtractor"
+        
+        # 确保 oo2core.dll 在 BundleExtractor 旁边
+        $ExtractorDir = Split-Path -Parent $BundledBundleExtractorExe
+        $ExtractorOodle = Join-Path $ExtractorDir "oo2core.dll"
+        if (-not (Test-Path -LiteralPath $ExtractorOodle -PathType Leaf) -and (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+            Copy-Item -LiteralPath $BundledOodleDll -Destination $ExtractorOodle -Force
         }
-        else {
-            throw "No usable BaseItemTypes files. Log: $ExtractLog"
+        
+        $EnDestDir = Join-Path $LatestDir "data"
+        $TcDestDir = Join-Path $LatestDir "data"
+        New-Item -ItemType Directory -Force -Path $EnDestDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $TcDestDir | Out-Null
+        
+        $EnDestFile = Join-Path $EnDestDir "data_balance_baseitemtypes.datc64"
+        $TcDestFile = Join-Path $TcDestDir "data_balance_traditional chinese_baseitemtypes.datc64"
+        
+        Write-Host "Extracting English BaseItemTypes..."
+        & $BundledBundleExtractorExe $Bundles2Paths.IndexBin $Bundles2Paths.EnBaseItems $EnDestFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract English BaseItemTypes. Exit code: $LASTEXITCODE"
         }
+        Write-Host "Extracted to: $EnDestFile"
+        
+        Write-Host "Extracting Traditional Chinese BaseItemTypes..."
+        & $BundledBundleExtractorExe $Bundles2Paths.IndexBin $Bundles2Paths.TcBaseItems $TcDestFile
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract Traditional Chinese BaseItemTypes. Exit code: $LASTEXITCODE"
+        }
+        Write-Host "Extracted to: $TcDestFile"
     }
 }
 else {
@@ -320,27 +381,70 @@ if ($NoOpenTool) {
 }
 
 if (-not $NoInstall) {
-    Write-Step "Install patch into Content.ggpk"
-    Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
-    Assert-File $GameRootPatchZip "patch zip"
+    if ($GameMode -eq "GGPK") {
+        Write-Step "Install patch into Content.ggpk"
+        Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
+        Assert-File $GameRootPatchZip "patch zip"
 
-    Write-Host "Installer: $BundledPatchDll"
-    Write-Host "GGPK     : $ContentGgpk"
-    Write-Host "Patch    : $GameRootPatchZip"
+        Write-Host "Installer: $BundledPatchDll"
+        Write-Host "GGPK     : $ContentGgpk"
+        Write-Host "Patch    : $GameRootPatchZip"
 
-    Push-Location -LiteralPath $BundledInstallerDir
-    try {
-        $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $GameRootPatchZip 2>&1
-        $InstallerOutput | ForEach-Object { Write-Host $_ }
-        $InstallerText = ($InstallerOutput | Out-String)
-        if ($LASTEXITCODE -ne 0 -or $InstallerText -match 'Exception|Unhandled|錯誤|错误|失敗|失败') {
-            throw "Patch installer failed. Exit code: $LASTEXITCODE"
+        Push-Location -LiteralPath $BundledInstallerDir
+        try {
+            $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $GameRootPatchZip 2>&1
+            $InstallerOutput | ForEach-Object { Write-Host $_ }
+            $InstallerText = ($InstallerOutput | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $InstallerText -match 'Exception|Unhandled|錯誤|错误|失敗|失败') {
+                throw "Patch installer failed. Exit code: $LASTEXITCODE"
+            }
         }
+        finally {
+            Pop-Location
+        }
+        Write-Host "Patch installed into Content.ggpk." -ForegroundColor Green
     }
-    finally {
-        Pop-Location
+    else {
+        Write-Step "Install patch into Bundles2 using PatchBundle3"
+        
+        # 检查 PatchBundle3.exe
+        if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+            $BundledBundlePatchExe = Join-Path $CodeToolsRoot "PatchBundle3.exe"
+        }
+        if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+            throw "Missing PatchBundle3.exe: $BundledBundlePatchExe"
+        }
+        
+        # 创建临时 ZIP 补丁（只包含繁体中文文件，与 GGPK 模式保持一致）
+        $TempPatchZip = Join-Path $env:TEMP ([Guid]::NewGuid().ToString("N") + ".zip")
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $Archive = [System.IO.Compression.ZipFile]::Open($TempPatchZip, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $Archive,
+                $PatchedDat,
+                "data/balance/traditional chinese/baseitemtypes.datc64",
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
+        finally {
+            $Archive.Dispose()
+        }
+        
+        Write-Host "Bundle3: $($BundledBundlePatchExe)"
+        Write-Host "Index  : $($Bundles2Paths.IndexBin)"
+        Write-Host "Patch  : $TempPatchZip"
+        
+        & $BundledBundlePatchExe $Bundles2Paths.IndexBin $TempPatchZip
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item -LiteralPath $TempPatchZip -Force -ErrorAction SilentlyContinue
+            throw "PatchBundle3 failed. Exit code: $LASTEXITCODE"
+        }
+        
+        Remove-Item -LiteralPath $TempPatchZip -Force -ErrorAction SilentlyContinue
+        Write-Host "Patch installed into Bundles2." -ForegroundColor Green
     }
-    Write-Host "Patch installed into Content.ggpk." -ForegroundColor Green
 }
 else {
     Write-Host "Skip installing patch into Content.ggpk." -ForegroundColor Yellow

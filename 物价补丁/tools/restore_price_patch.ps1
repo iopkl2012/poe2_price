@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Poe2Dir = "",
     [string]$RestoreZip = ""
 )
@@ -108,10 +108,15 @@ function Assert-RestoreZip {
     }
 }
 
+$GameMode = Get-Poe2GameMode -Poe2Dir $Poe2Dir
 $ContentGgpk = Join-Path $Poe2Dir "Content.ggpk"
+$Bundles2Paths = Get-Bundles2Paths -Poe2Dir $Poe2Dir
 $BundledInstallerDir = Join-Path $RepoRoot (Get-Poe2PatchName "InstallerDir")
 $BundledPatchDll = Join-Path $BundledInstallerDir "PatchBundledGGPK3.dll"
 $BundledPatchRuntimeConfig = Join-Path $BundledInstallerDir "PatchBundledGGPK3.runtimeconfig.json"
+$BundledBundlePatchExe = Join-Path $BundledInstallerDir "PatchBundle3.exe"
+$BundledBundleExtractorExe = Join-Path $BundledInstallerDir "BundleExtractor\BundleExtractor.exe"
+$BundledOodleDll = Join-Path $BundledInstallerDir "BundleExtractor\oo2core.dll"
 $RestoreZipName = Get-Poe2PatchName "RestorePatchZip"
 $RestoreOutDir = Join-Path $RepoRoot "output\restore"
 $RestoreOutZip = Join-Path $RestoreOutDir $RestoreZipName
@@ -122,13 +127,74 @@ $CleanDat = Join-Path $RepoRoot "output\dat_files_latest\data\data_balance_tradi
 Write-Host "POE2 price patch restore" -ForegroundColor Green
 Write-Host "Game dir : $Poe2Dir"
 Write-Host "Patch dir: $RepoRoot"
+Write-Host "Mode     : $GameMode" -ForegroundColor Cyan
 
-Assert-File $ContentGgpk "Content.ggpk"
-Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
-Assert-File $BundledPatchRuntimeConfig "PatchBundledGGPK3.runtimeconfig.json"
+if ($GameMode -eq "GGPK") {
+    Assert-File $ContentGgpk "Content.ggpk"
+    Assert-File $BundledPatchDll "PatchBundledGGPK3.dll"
+    Assert-File $BundledPatchRuntimeConfig "PatchBundledGGPK3.runtimeconfig.json"
+}
+else {
+    # Bundles2 (Steam/Epic) 模式
+    Assert-File $Bundles2Paths.IndexBin "Bundles2 _.index.bin"
+    # 检查工具
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        $BundledBundleExtractorExe = Join-Path $CodeToolsRoot "BundleExtractor\BundleExtractor.exe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        throw "Missing BundleExtractor.exe: $BundledBundleExtractorExe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        $BundledOodleDll = Join-Path $CodeToolsRoot "BundleExtractor\oo2core.dll"
+    }
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        throw "Missing oo2core.dll: $BundledOodleDll"
+    }
+}
 $Dotnet = Ensure-DotNet8Runtime -RepoRoot $RepoRoot
 
+function Ensure-CleanBaseItemForRestore {
+    # 在 Bundles2 模式下，如果缓存的 clean 文件不存在或看起来已修补，需要重新提取
+    
+    if (Test-Path -LiteralPath $CleanDat -PathType Leaf) {
+        if (-not (Test-BaseItemsLookPatched $CleanDat)) {
+            return $CleanDat
+        }
+        Write-Host "Cached BaseItemTypes looks patched. Re-extracting from bundle..." -ForegroundColor Yellow
+    }
+    
+    # 需要从 bundle 重新提取
+    Write-Step "Extract clean BaseItemTypes from Bundles2"
+    
+    $ExtractDir = Split-Path -Parent $CleanDat
+    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+    
+    # 确保 oo2core.dll 在 BundleExtractor 旁边
+    $ExtractorDir = Split-Path -Parent $BundledBundleExtractorExe
+    $ExtractorOodle = Join-Path $ExtractorDir "oo2core.dll"
+    if (-not (Test-Path -LiteralPath $ExtractorOodle -PathType Leaf) -and (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        Copy-Item -LiteralPath $BundledOodleDll -Destination $ExtractorOodle -Force
+    }
+    
+    Write-Host "Extracting from: $($Bundles2Paths.IndexBin)"
+    Write-Host "File: $($Bundles2Paths.TcBaseItems)"
+    Write-Host "Output: $CleanDat"
+    
+    & $BundledBundleExtractorExe $Bundles2Paths.IndexBin $Bundles2Paths.TcBaseItems $CleanDat
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to extract clean BaseItemTypes. Exit code: $LASTEXITCODE"
+    }
+    
+    # 验证提取的文件
+    if (Test-BaseItemsLookPatched $CleanDat) {
+        throw "Extracted BaseItemTypes still looks patched. Something is wrong."
+    }
+    
+    return $CleanDat
+}
+
 if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
+    # 尝试查找现有的还原补丁
     $Candidates = @($PatchFolderRestoreZip, $RestoreOutZip, $GameRootRestoreZip)
     foreach ($Candidate in $Candidates) {
         if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
@@ -136,12 +202,21 @@ if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
             break
         }
     }
-}
-
-if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
-    Write-Step "Build restore zip from cached clean BaseItemTypes"
-    New-BaseItemRestoreZip $CleanDat $RestoreOutZip
-    $RestoreZip = $RestoreOutZip
+    
+    # 如果没有找到还原补丁，创建一个
+    if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
+        Write-Step "Build restore zip from clean BaseItemTypes"
+        
+        if ($GameMode -eq "GGPK") {
+            New-BaseItemRestoreZip $CleanDat $RestoreOutZip
+        }
+        else {
+            # Bundles2 模式：先确保有 clean 的文件
+            $CleanSource = Ensure-CleanBaseItemForRestore
+            New-BaseItemRestoreZip $CleanSource $RestoreOutZip
+        }
+        $RestoreZip = $RestoreOutZip
+    }
 }
 else {
     $RestoreZip = (Resolve-Path -LiteralPath $RestoreZip).Path
@@ -154,23 +229,47 @@ if ($RestoreZip -ne $PatchFolderRestoreZip) {
 }
 Copy-Item -LiteralPath $RestoreZip -Destination $GameRootRestoreZip -Force
 
-Write-Step "Install restore patch into Content.ggpk"
-Write-Host "Installer: $BundledPatchDll"
-Write-Host "GGPK     : $ContentGgpk"
-Write-Host "Patch    : $GameRootRestoreZip"
+if ($GameMode -eq "GGPK") {
+    Write-Step "Install restore patch into Content.ggpk"
+    Write-Host "Installer: $BundledPatchDll"
+    Write-Host "GGPK     : $ContentGgpk"
+    Write-Host "Patch    : $GameRootRestoreZip"
 
-Push-Location -LiteralPath $BundledInstallerDir
-try {
-    $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $GameRootRestoreZip 2>&1
-    $InstallerOutput | ForEach-Object { Write-Host $_ }
-    $InstallerText = ($InstallerOutput | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $InstallerText -match 'Exception|Unhandled|錯誤|错误|失敗|失败') {
-        throw "Restore installer failed. Exit code: $LASTEXITCODE"
+    Push-Location -LiteralPath $BundledInstallerDir
+    try {
+        $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $GameRootRestoreZip 2>&1
+        $InstallerOutput | ForEach-Object { Write-Host $_ }
+        $InstallerText = ($InstallerOutput | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $InstallerText -match 'Exception|Unhandled|錯誤|错误|失敗|失败') {
+            throw "Restore installer failed. Exit code: $LASTEXITCODE"
+        }
     }
-}
-finally {
-    Pop-Location
-}
+    finally {
+        Pop-Location
+    }
 
-Write-Host ""
-Write-Host "Restore installed into Content.ggpk." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Restore installed into Content.ggpk." -ForegroundColor Green
+}
+else {
+    Write-Step "Install restore patch into Bundles2 using PatchBundle3"
+    
+    # 检查 PatchBundle3.exe
+    if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+        $BundledBundlePatchExe = Join-Path $CodeToolsRoot "PatchBundle3.exe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+        throw "Missing PatchBundle3.exe: $BundledBundlePatchExe"
+    }
+    
+    Write-Host "Bundle3: $($BundledBundlePatchExe)"
+    Write-Host "Index  : $($Bundles2Paths.IndexBin)"
+    Write-Host "Patch  : $GameRootRestoreZip"
+    
+    & $BundledBundlePatchExe $Bundles2Paths.IndexBin $GameRootRestoreZip
+    if ($LASTEXITCODE -ne 0) {
+        throw "PatchBundle3 restore failed. Exit code: $LASTEXITCODE"
+    }
+    
+    Write-Host "Restore installed into Bundles2." -ForegroundColor Green
+}
