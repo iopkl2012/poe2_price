@@ -24,10 +24,90 @@
                 [char]0x8865, [char]0x4E01, ".zip"
             )
         }
+        "ChinaRestorePatchZip" {
+            return [string]::Concat(
+                [char]0x56FD, [char]0x670D, [char]0x8FD8, [char]0x539F,
+                [char]0x5305, ".zip"
+            )
+        }
+        "IntlRestorePatchZip" {
+            return [string]::Concat(
+                [char]0x56FD, [char]0x9645, [char]0x670D, [char]0x8FD8,
+                [char]0x539F, [char]0x8865, [char]0x4E01, ".zip"
+            )
+        }
+        "PhysicalRestorePatchZip" {
+            return [string]::Concat(
+                [char]0x771F, [char]0x5B9E, [char]0x8FD8, [char]0x539F,
+                [char]0x7269, [char]0x4EF7, [char]0x8865, [char]0x4E01,
+                ".zip"
+            )
+        }
         default {
             throw "Unknown patch name: $Name"
         }
     }
+}
+
+function Get-Poe2FixedRestorePatchZipName {
+    param([Parameter(Mandatory = $true)]$InstallInfo)
+
+    if ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*") {
+        return Get-Poe2PatchName "ChinaRestorePatchZip"
+    }
+
+    return Get-Poe2PatchName "IntlRestorePatchZip"
+}
+
+function Get-Poe2RestorePatchZipCandidateNames {
+    param([Parameter(Mandatory = $true)]$InstallInfo)
+
+    return Get-Poe2FixedRestorePatchZipName -InstallInfo $InstallInfo
+}
+
+function Get-Poe2FixedPhysicalRestorePatchZipName {
+    param([Parameter(Mandatory = $true)]$InstallInfo)
+
+    if ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*") {
+        return Get-Poe2PatchName "ChinaRestorePatchZip"
+    }
+
+    return Get-Poe2PatchName "PhysicalRestorePatchZip"
+}
+
+function Get-Poe2NormalizedFullPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+}
+
+function Test-Poe2PathInside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $FullPath = Get-Poe2NormalizedFullPath $Path
+    $FullRoot = Get-Poe2NormalizedFullPath $Root
+    $RootPrefix = $FullRoot + [System.IO.Path]::DirectorySeparatorChar
+    return ($FullPath -eq $FullRoot -or $FullPath.StartsWith($RootPrefix, [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Assert-Poe2PathInside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [string]$Message = "Refusing to access path outside expected folder"
+    )
+
+    $FullPath = Get-Poe2NormalizedFullPath $Path
+    if (-not (Test-Poe2PathInside -Path $FullPath -Root $Root)) {
+        throw "$Message`: $FullPath"
+    }
+    return $FullPath
 }
 
 function Get-Poe2GameMode {
@@ -43,7 +123,213 @@ function Get-Poe2GameMode {
         return "Bundles2"
     }
     else {
-        throw "无法检测游戏模式：请确保物价补丁文件夹放在游戏根目录。找不到 Content.ggpk 或 Bundles2\_.index.bin"
+        throw "无法检测 POE2 游戏目录：请把物价补丁文件夹放在游戏根目录。找不到 Content.ggpk 或 Bundles2\_.index.bin"
+    }
+}
+
+function Test-Poe2ChinaClient {
+    param([Parameter(Mandatory = $true)][string]$Poe2Dir)
+
+    $Score = 0
+    foreach ($Relative in @(
+        "wegame.ini",
+        "rail_api64.dll",
+        "rail_files",
+        "WeGameLauncher",
+        "TCLS",
+        "AntiCheatExpert",
+        "QQOpenSDK.dll"
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $Poe2Dir $Relative)) {
+            $Score += 1
+        }
+    }
+
+    if ((Get-ChildItem -LiteralPath $Poe2Dir -Filter "MSDK*.dll" -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        $Score += 1
+    }
+
+    return ($Score -ge 2)
+}
+
+function Get-Poe2LanguageInfoFromCode {
+    param([string]$LanguageCode)
+
+    $CodeText = ""
+    if (-not [string]::IsNullOrWhiteSpace($LanguageCode)) {
+        $CodeText = $LanguageCode.Trim()
+    }
+    $Code = $CodeText.ToLowerInvariant().Replace("_", "-")
+
+    if ([string]::IsNullOrWhiteSpace($CodeText)) {
+        return [pscustomobject]@{
+            Code          = "en"
+            Name          = "English"
+            Path          = "data/balance/baseitemtypes.datc64"
+            Defaulted     = $true
+            DefaultReason = "未读取到 POE2 语言配置，已回退到 English。可通过 POE2_PATCH_LANGUAGE 手动指定语言。"
+        }
+    }
+
+    if ($Code -in @("en", "en-us", "en-gb", "english")) {
+        return [pscustomobject]@{
+            Code = $(if ([string]::IsNullOrWhiteSpace($LanguageCode)) { "en" } else { $LanguageCode })
+            Name = "English"
+            Path = "data/balance/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -in @("zh-tw", "zh-hant", "traditional chinese", "traditional-chinese", "tc")) {
+        return [pscustomobject]@{
+            Code = $(if ([string]::IsNullOrWhiteSpace($LanguageCode)) { "zh-TW" } else { $LanguageCode })
+            Name = "Traditional Chinese"
+            Path = "data/balance/traditional chinese/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -in @("zh-cn", "zh-hans", "simplified chinese", "simplified-chinese", "sc")) {
+        return [pscustomobject]@{
+            Code = $(if ([string]::IsNullOrWhiteSpace($LanguageCode)) { "zh-CN" } else { $LanguageCode })
+            Name = "Simplified Chinese"
+            Path = "data/balance/simplified chinese/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "ja*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Japanese"
+            Path = "data/balance/japanese/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "ko*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Korean"
+            Path = "data/balance/korean/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "ru*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Russian"
+            Path = "data/balance/russian/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "fr*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "French"
+            Path = "data/balance/french/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "de*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "German"
+            Path = "data/balance/german/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "es*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Spanish"
+            Path = "data/balance/spanish/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "pt*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Portuguese"
+            Path = "data/balance/portuguese/baseitemtypes.datc64"
+        }
+    }
+    if ($Code -like "th*") {
+        return [pscustomobject]@{
+            Code = $LanguageCode
+            Name = "Thai"
+            Path = "data/balance/thai/baseitemtypes.datc64"
+        }
+    }
+
+    return [pscustomobject]@{
+        Code          = "en"
+        Name          = "English"
+        Path          = "data/balance/baseitemtypes.datc64"
+        Defaulted     = $true
+        DefaultReason = "无法识别 POE2 语言代码 '$CodeText'，已回退到 English。可通过 POE2_PATCH_LANGUAGE 手动指定语言。"
+    }
+}
+
+function Get-Poe2ConfigLanguage {
+    param([string]$Poe2Dir = "")
+
+    if (-not [string]::IsNullOrWhiteSpace($env:POE2_PATCH_LANGUAGE)) {
+        return $env:POE2_PATCH_LANGUAGE
+    }
+
+    $MyGames = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Path of Exile 2"
+    if (-not (Test-Path -LiteralPath $MyGames -PathType Container)) {
+        return $null
+    }
+
+    $ConfigFiles = Get-ChildItem -LiteralPath $MyGames -File -Filter "poe2_production*_Config.ini" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending
+
+    foreach ($Config in $ConfigFiles) {
+        $InLanguageSection = $false
+        foreach ($Line in (Get-Content -LiteralPath $Config.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+            $Trimmed = $Line.Trim()
+            if ($Trimmed -match '^\[(.+)\]$') {
+                $InLanguageSection = ($Matches[1] -ieq "LANGUAGE")
+                continue
+            }
+            if ($InLanguageSection -and $Trimmed -match '^language\s*=\s*(.+)$') {
+                return $Matches[1].Trim()
+            }
+        }
+    }
+
+    return $null
+}
+
+function Get-Poe2InstallInfo {
+    param([Parameter(Mandatory = $true)][string]$Poe2Dir)
+
+    $Mode = Get-Poe2GameMode -Poe2Dir $Poe2Dir
+    $IsChina = Test-Poe2ChinaClient -Poe2Dir $Poe2Dir
+    $ConfigLanguage = Get-Poe2ConfigLanguage -Poe2Dir $Poe2Dir
+    $LanguageInfo = Get-Poe2LanguageInfoFromCode -LanguageCode $ConfigLanguage
+    $LanguagePath = $LanguageInfo.Path
+    $LanguageName = $LanguageInfo.Name
+    $LanguageDefaulted = [bool]$LanguageInfo.Defaulted
+    $LanguageDefaultReason = [string]$LanguageInfo.DefaultReason
+    $InstallKind = "Intl-Bundles2"
+    $DisplayName = "国际服 Steam/Epic Bundles2"
+
+    if ($Mode -eq "GGPK") {
+        $InstallKind = "Intl-Standalone-GGPK"
+        $DisplayName = "国际服官方 GGPK"
+    }
+    elseif ($IsChina) {
+        $InstallKind = "CN-WeGame-Bundles2"
+        $DisplayName = "国服 WeGame Bundles2"
+        $LanguagePath = "data/balance/simplified chinese/baseitemtypes.datc64"
+        $LanguageName = "Simplified Chinese"
+        $ConfigLanguage = "zh-CN"
+        $LanguageDefaulted = $false
+        $LanguageDefaultReason = ""
+    }
+
+    return [pscustomobject]@{
+        Mode             = $Mode
+        InstallKind      = $InstallKind
+        DisplayName      = $DisplayName
+        IsChina          = $IsChina
+        ConfigLanguage   = $(if ($LanguageDefaulted -or [string]::IsNullOrWhiteSpace($ConfigLanguage)) { $LanguageInfo.Code } else { $ConfigLanguage })
+        EnBaseItemsPath  = "data/balance/baseitemtypes.datc64"
+        TcBaseItemsPath  = $LanguagePath
+        LanguageName     = $LanguageName
+        LanguageFileSlug = ($LanguagePath -replace '/', '_')
+        LanguageDefaulted = $LanguageDefaulted
+        LanguageDefaultReason = $LanguageDefaultReason
     }
 }
 
@@ -57,7 +343,7 @@ function Get-Bundles2Paths {
         Bundles2Dir  = $Bundles2Dir
         IndexBin     = $IndexBin
         EnBaseItems  = "data/balance/baseitemtypes.datc64"
-        TcBaseItems  = "data/balance/traditional chinese/baseitemtypes.datc64"
+        TcBaseItems  = (Get-Poe2InstallInfo -Poe2Dir $Poe2Dir).TcBaseItemsPath
     }
 }
 
@@ -294,3 +580,4 @@ function Ensure-PythonRequests {
 
     return $Python
 }
+

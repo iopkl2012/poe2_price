@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Build a PoE2 GGPK patch zip that appends price text to item display names.
+Build a PoE2 patch zip that appends price text to item display names.
 
-This does not modify Content.ggpk directly. It rewrites a local copy of
-BaseItemTypes.datc64 and stores it in a zip with the same path layout used by
-the existing VisualGGPK3/PatchBundledGGPK3 patch tools.
+This does not modify game files directly. It rewrites a local copy of the
+target-language BaseItemTypes.datc64 and stores it in a zip with the virtual
+path layout used by the GGPK and Bundles2 patch tools.
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ DEFAULT_SOURCE = (
     / "output"
     / "dat_files_latest"
     / "data"
-    / "data_balance_traditional chinese_baseitemtypes.datc64"
+    / "data_balance_simplified chinese_baseitemtypes.datc64"
 )
-DEFAULT_GAME_PATH = "data/balance/traditional chinese/baseitemtypes.datc64"
+DEFAULT_GAME_PATH = "data/balance/simplified chinese/baseitemtypes.datc64"
 DISPLAY_NAME_FIELD_INDEX = 8
 
 
@@ -423,8 +423,21 @@ def apply_replacements_append(data: bytes, replacements: list[NameReplacement]) 
 
 def apply_replacements_fixed(data: bytes, replacements: list[NameReplacement]) -> bytes:
     output = bytearray(data)
+    unique_replacements: dict[tuple[int, int], NameReplacement] = {}
+    for replacement in replacements:
+        key = (replacement.name_start, replacement.name_end)
+        existing = unique_replacements.get(key)
+        if existing is None:
+            unique_replacements[key] = replacement
+            continue
+        if existing.fitted_name != replacement.fitted_name:
+            raise ValueError(
+                f"conflicting fixed-slot replacements at 0x{replacement.name_start:x}: "
+                f"{existing.fitted_name!r} != {replacement.fitted_name!r}"
+            )
+
     for replacement in sorted(
-        replacements, key=lambda item: item.name_start, reverse=True
+        unique_replacements.values(), key=lambda item: item.name_start, reverse=True
     ):
         start = replacement.name_start
         end = replacement.name_end
@@ -453,11 +466,10 @@ def export_names(source: Path, output: Path) -> None:
         writer = csv.DictWriter(fh, fieldnames=["metadata_path", "name"])
         writer.writeheader()
         for entry in entries:
-            if has_cjk(entry.name):
-                writer.writerow(
-                    {"metadata_path": entry.metadata_path, "name": entry.name}
-                )
-    print(f"exported {output} ({sum(1 for e in entries if has_cjk(e.name))} names)")
+            writer.writerow(
+                {"metadata_path": entry.metadata_path, "name": entry.name}
+            )
+    print(f"exported {output} ({len(entries)} names)")
 
 
 def build_patch(

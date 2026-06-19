@@ -1,6 +1,7 @@
-param(
+﻿param(
     [string]$Poe2Dir = "",
-    [string]$RestoreZip = ""
+    [string]$RestoreZip = "",
+    [switch]$NoInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,13 +49,101 @@ function Test-BaseItemsLookPatched {
             return $true
         }
         $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8
-        return [bool]($Rows | Where-Object { $_.name -match '=[0-9]+(?:\.[0-9]+)?[DE]$' } | Select-Object -First 1)
+        return [bool]($Rows | Where-Object {
+                $Name = [string]$_.name
+                if ([string]::IsNullOrWhiteSpace($Name)) {
+                    return $false
+                }
+                return (
+                    $Name -match '=[0-9]+(?:\.[0-9]+)?[DE]$' -or
+                    $Name -match '^[0-9]+(?:\.[0-9]+)?[DE]$' -or
+                    $Name -match '^<1[DE]$' -or
+                    ($Name.Length -le 12 -and $Name -match '[0-9]+(?:\.[0-9]+)?[DE]$')
+                )
+            } | Select-Object -First 1)
     }
     finally {
         if (Test-Path -LiteralPath $TempCsv -PathType Leaf) {
             Remove-Item -LiteralPath $TempCsv -Force
         }
     }
+}
+
+function Get-BaseItemsMetadataSignature {
+    param([string]$SourceDat)
+
+    Assert-File $SourceDat "BaseItemTypes.datc64"
+    $TempCsv = Join-Path $env:TEMP ([string]::Concat("poe2_baseitems_sig_", [Guid]::NewGuid().ToString("N"), ".csv"))
+    try {
+        $Python = Ensure-PythonRequests -RepoRoot $RepoRoot
+        $ExportScript = Join-Path $CodeToolsRoot "poe2_name_price_patch.py"
+        & $Python $ExportScript export --source $SourceDat --output $TempCsv *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to export BaseItemTypes metadata signature. Exit code: $LASTEXITCODE"
+        }
+
+        $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8
+        $Paths = @($Rows | ForEach-Object { $_.metadata_path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $Joined = [string]::Join("`n", $Paths)
+        $Sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Joined)
+            $Hash = [System.BitConverter]::ToString($Sha.ComputeHash($Bytes)).Replace("-", "")
+        }
+        finally {
+            $Sha.Dispose()
+        }
+
+        return [pscustomobject]@{
+            Count = $Paths.Count
+            Hash  = $Hash
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $TempCsv -PathType Leaf) {
+            Remove-Item -LiteralPath $TempCsv -Force
+        }
+    }
+}
+
+function Test-BaseItemsCompatible {
+    param(
+        [string]$LeftDat,
+        [string]$RightDat
+    )
+
+    try {
+        $Left = Get-BaseItemsMetadataSignature $LeftDat
+        $Right = Get-BaseItemsMetadataSignature $RightDat
+        return ($Left.Count -eq $Right.Count -and $Left.Hash -eq $Right.Hash)
+    }
+    catch {
+        Write-Warning "BaseItemTypes compatibility check failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Get-ZipBaseItemsEntryAsTempFile {
+    param(
+        [string]$ZipPath,
+        [string]$EntryName
+    )
+
+    $TempDat = Join-Path $env:TEMP ([string]::Concat("poe2_restore_entry_", [Guid]::NewGuid().ToString("N"), ".datc64"))
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        $Entry = $Archive.GetEntry($EntryName)
+        if ($null -eq $Entry) {
+            throw "Restore zip does not contain $EntryName"
+        }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $TempDat, $true)
+    }
+    finally {
+        $Archive.Dispose()
+    }
+    return $TempDat
 }
 
 function New-BaseItemRestoreZip {
@@ -67,8 +156,6 @@ function New-BaseItemRestoreZip {
     if (Test-BaseItemsLookPatched $SourceDat) {
         throw "Cached BaseItemTypes looks patched. Refusing to build a restore zip from it."
     }
-    Add-Type -AssemblyName System.IO.Compression
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
 
     $OutputDir = Split-Path -Parent $OutputZip
     New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -76,12 +163,14 @@ function New-BaseItemRestoreZip {
         Remove-Item -LiteralPath $OutputZip -Force
     }
 
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [System.IO.Compression.ZipFile]::Open($OutputZip, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
             $Archive,
             $SourceDat,
-            "data/balance/traditional chinese/baseitemtypes.datc64",
+            $InstallInfo.TcBaseItemsPath,
             [System.IO.Compression.CompressionLevel]::Optimal
         ) | Out-Null
     }
@@ -98,9 +187,25 @@ function Assert-RestoreZip {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
     try {
-        $Entry = $Archive.GetEntry("data/balance/traditional chinese/baseitemtypes.datc64")
+        $Entry = $Archive.GetEntry($InstallInfo.TcBaseItemsPath)
         if ($null -eq $Entry) {
-            throw "Restore zip does not contain data/balance/traditional chinese/baseitemtypes.datc64"
+            throw "Restore zip does not contain $($InstallInfo.TcBaseItemsPath)"
+        }
+        if ($Entry.Length -le 1048576) {
+            throw "Restore zip entry is too small to be a valid BaseItemTypes.datc64"
+        }
+
+        $TempDat = Join-Path $env:TEMP ([string]::Concat("poe2_restore_assert_", [Guid]::NewGuid().ToString("N"), ".datc64"))
+        try {
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $TempDat, $true)
+            if (Test-BaseItemsLookPatched $TempDat) {
+                throw "Restore zip BaseItemTypes looks patched. Refusing to restore from a polluted backup."
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $TempDat -PathType Leaf) {
+                Remove-Item -LiteralPath $TempDat -Force
+            }
         }
     }
     finally {
@@ -108,26 +213,284 @@ function Assert-RestoreZip {
     }
 }
 
-$GameMode = Get-Poe2GameMode -Poe2Dir $Poe2Dir
+function Test-RestoreZipUsable {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    try {
+        $Archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    }
+    catch {
+        return $false
+    }
+    try {
+        $Entry = $Archive.GetEntry($InstallInfo.TcBaseItemsPath)
+        if ($null -eq $Entry -or $Entry.Length -le 1048576) {
+            return $false
+        }
+
+        $TempDat = Join-Path $env:TEMP ([string]::Concat("poe2_restore_validate_", [Guid]::NewGuid().ToString("N"), ".datc64"))
+        try {
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $TempDat, $true)
+            return (-not (Test-BaseItemsLookPatched $TempDat))
+        }
+        catch {
+            return $false
+        }
+        finally {
+            if (Test-Path -LiteralPath $TempDat -PathType Leaf) {
+                Remove-Item -LiteralPath $TempDat -Force
+            }
+        }
+    }
+    finally {
+        $Archive.Dispose()
+    }
+}
+
+function New-CurrentTargetRestoreZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceZip,
+        [Parameter(Mandatory = $true)][string]$OutputZip
+    )
+
+    Assert-RestoreZip $SourceZip
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $SourceArchive = [System.IO.Compression.ZipFile]::OpenRead($SourceZip)
+    try {
+        $Entry = $SourceArchive.GetEntry($InstallInfo.TcBaseItemsPath)
+        if ($null -eq $Entry) {
+            throw "Restore zip does not contain $($InstallInfo.TcBaseItemsPath)"
+        }
+
+        $OutputDir = Split-Path -Parent $OutputZip
+        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+        if (Test-Path -LiteralPath $OutputZip -PathType Leaf) {
+            Remove-Item -LiteralPath $OutputZip -Force
+        }
+
+        $TargetArchive = [System.IO.Compression.ZipFile]::Open($OutputZip, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            $NewEntry = $TargetArchive.CreateEntry($InstallInfo.TcBaseItemsPath, [System.IO.Compression.CompressionLevel]::Optimal)
+            $Input = $Entry.Open()
+            $Output = $NewEntry.Open()
+            try {
+                $Input.CopyTo($Output)
+            }
+            finally {
+                $Output.Dispose()
+                $Input.Dispose()
+            }
+        }
+        finally {
+            $TargetArchive.Dispose()
+        }
+    }
+    finally {
+        $SourceArchive.Dispose()
+    }
+
+    return (Resolve-Path -LiteralPath $OutputZip).Path
+}
+
+function Get-RestoreZipCandidates {
+    $Paths = New-Object System.Collections.Generic.List[string]
+    foreach ($Name in (Get-Poe2RestorePatchZipCandidateNames -InstallInfo $InstallInfo)) {
+        $Paths.Add((Join-Path $RepoRoot $Name))
+        $Paths.Add((Join-Path $RestoreOutDir $Name))
+    }
+
+    $Seen = @{}
+    foreach ($Path in $Paths) {
+        $FullPath = [System.IO.Path]::GetFullPath($Path)
+        $Key = $FullPath.ToLowerInvariant()
+        if (-not $Seen.ContainsKey($Key)) {
+            $Seen[$Key] = $true
+            $FullPath
+        }
+    }
+}
+
+function Get-PhysicalRestoreZipCandidates {
+    $Names = @(
+        (Get-Poe2FixedPhysicalRestorePatchZipName -InstallInfo $InstallInfo),
+        (Get-Poe2PatchName "PhysicalRestorePatchZip")
+    )
+
+    $SeenNames = @{}
+    foreach ($Name in $Names) {
+        if ($SeenNames.ContainsKey($Name)) {
+            continue
+        }
+        $SeenNames[$Name] = $true
+        Join-Path $RepoRoot $Name
+        Join-Path $RestoreOutDir $Name
+    }
+}
+
+function Assert-PhysicalRestoreZip {
+    param([string]$Path)
+
+    Assert-File $Path "physical restore zip"
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $Entry = $Archive.GetEntry("Bundles2/_.index.bin")
+        if ($null -eq $Entry -or $Entry.Length -le 1048576) {
+            throw "Physical restore zip does not contain a valid Bundles2/_.index.bin"
+        }
+    }
+    finally {
+        $Archive.Dispose()
+    }
+}
+
+function Restore-PhysicalBundles2 {
+    param([string]$Path)
+
+    Assert-PhysicalRestoreZip $Path
+
+    $Bundles2Root = (Resolve-Path -LiteralPath $Bundles2Paths.Bundles2Dir).Path
+    $GameRoot = (Resolve-Path -LiteralPath $Poe2Dir).Path
+    Assert-Poe2PathInside -Path $Bundles2Root -Root $GameRoot -Message "Refusing to restore outside game folder" | Out-Null
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $Entries = @($Archive.Entries | Where-Object { $_.FullName -like "Bundles2/*" -and -not [string]::IsNullOrEmpty($_.Name) })
+        if (-not ($Entries | Where-Object { $_.FullName -eq "Bundles2/_.index.bin" } | Select-Object -First 1)) {
+            throw "Physical restore zip does not contain Bundles2/_.index.bin"
+        }
+
+        $HasLibBackup = [bool]($Entries | Where-Object { $_.FullName -like "Bundles2/LibGGPK3/*" } | Select-Object -First 1)
+        $LibDir = Join-Path $Bundles2Root "LibGGPK3"
+        if (-not $HasLibBackup -and (Test-Path -LiteralPath $LibDir -PathType Container)) {
+            $ResolvedLibDir = (Resolve-Path -LiteralPath $LibDir).Path
+            Assert-Poe2PathInside -Path $ResolvedLibDir -Root $Bundles2Root -Message "Refusing to remove unexpected LibGGPK3 path" | Out-Null
+            Remove-Item -LiteralPath $ResolvedLibDir -Recurse -Force
+        }
+
+        foreach ($Entry in $Entries) {
+            $Relative = $Entry.FullName.Substring("Bundles2/".Length).Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+            $Target = [System.IO.Path]::GetFullPath((Join-Path $Bundles2Root $Relative))
+            Assert-Poe2PathInside -Path $Target -Root $Bundles2Root -Message "Refusing to restore path outside Bundles2" | Out-Null
+
+            $TargetDir = Split-Path -Parent $Target
+            New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $Target, $true)
+        }
+    }
+    finally {
+        $Archive.Dispose()
+    }
+}
+
+function Resolve-BundleExtractor {
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        $script:BundledBundleExtractorExe = Join-Path $BundledInstallerDir "BundleExtractor\BundleExtractor.exe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        $script:BundledBundleExtractorExe = Join-Path $CodeToolsRoot "BundleExtractor\BundleExtractor.exe"
+    }
+    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
+        throw "Missing BundleExtractor.exe: $BundledBundleExtractorExe"
+    }
+
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        $script:BundledOodleDll = Join-Path $BundledInstallerDir "BundleExtractor\oo2core.dll"
+    }
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        $script:BundledOodleDll = Join-Path $CodeToolsRoot "BundleExtractor\oo2core.dll"
+    }
+    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        throw "Missing oo2core.dll: $BundledOodleDll"
+    }
+
+    $ExtractorDir = Split-Path -Parent $BundledBundleExtractorExe
+    $ExtractorOodle = Join-Path $ExtractorDir "oo2core.dll"
+    if (-not (Test-Path -LiteralPath $ExtractorOodle -PathType Leaf) -and (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
+        Copy-Item -LiteralPath $BundledOodleDll -Destination $ExtractorOodle -Force
+    }
+}
+
+function Extract-CurrentGgpkBaseItemsForRestoreCheck {
+    $LocalExtractorDll = Join-Path $PublicToolsRoot "GGPKExtractor\GGPKExtractor.dll"
+    $LocalExtractorExe = Join-Path $PublicToolsRoot "GGPKExtractor\GGPKExtractor.exe"
+    $FallbackExtractor = Join-Path $Poe2Dir "tiaoshi\extractor_tool\GGPKExtractor\bin\Release\net8.0-windows\GGPKExtractor.exe"
+    $ExtractorUsesDotnet = $false
+    if (Test-Path -LiteralPath $LocalExtractorDll -PathType Leaf) {
+        $Extractor = $LocalExtractorDll
+        $ExtractorUsesDotnet = $true
+    }
+    elseif (Test-Path -LiteralPath $LocalExtractorExe -PathType Leaf) {
+        $Extractor = $LocalExtractorExe
+    }
+    else {
+        $Extractor = $FallbackExtractor
+    }
+    Assert-File $Extractor "GGPKExtractor"
+
+    $TempDir = Join-Path $env:TEMP ([string]::Concat("poe2_restore_check_", [Guid]::NewGuid().ToString("N")))
+    $ExtractLog = Join-Path $TempDir "extract.log"
+    New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
+    if ($ExtractorUsesDotnet) {
+        & $Dotnet $Extractor $ContentGgpk $TempDir *> $ExtractLog
+    }
+    else {
+        & $Extractor $ContentGgpk $TempDir *> $ExtractLog
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to extract current BaseItemTypes for compatibility check. Log: $ExtractLog"
+    }
+
+    $Extracted = Join-Path $TempDir ("data\" + $InstallInfo.LanguageFileSlug)
+    Assert-File $Extracted "current BaseItemTypes"
+    return [pscustomobject]@{
+        Dir = $TempDir
+        Dat = $Extracted
+    }
+}
+
+$PublicToolsRoot = Join-Path $RepoRoot "tools"
+$InstallInfo = Get-Poe2InstallInfo -Poe2Dir $Poe2Dir
+$GameMode = $InstallInfo.Mode
 $ContentGgpk = Join-Path $Poe2Dir "Content.ggpk"
 $Bundles2Paths = Get-Bundles2Paths -Poe2Dir $Poe2Dir
 $BundledInstallerDir = Join-Path $RepoRoot (Get-Poe2PatchName "InstallerDir")
 $BundledPatchDll = Join-Path $BundledInstallerDir "PatchBundledGGPK3.dll"
 $BundledPatchRuntimeConfig = Join-Path $BundledInstallerDir "PatchBundledGGPK3.runtimeconfig.json"
 $BundledBundlePatchExe = Join-Path $BundledInstallerDir "PatchBundle3.exe"
-$BundledBundleExtractorExe = Join-Path $BundledInstallerDir "BundleExtractor\BundleExtractor.exe"
-$BundledOodleDll = Join-Path $BundledInstallerDir "BundleExtractor\oo2core.dll"
-$RestoreZipName = Get-Poe2PatchName "RestorePatchZip"
+$BundledBundlePatchDll = Join-Path $BundledInstallerDir "PatchBundle3.dll"
+$BundledBundleExtractorExe = Join-Path $PublicToolsRoot "BundleExtractor\BundleExtractor.exe"
+$BundledOodleDll = Join-Path $PublicToolsRoot "BundleExtractor\oo2core.dll"
+$RestoreZipName = Get-Poe2FixedRestorePatchZipName -InstallInfo $InstallInfo
+$PhysicalRestoreZipName = Get-Poe2FixedPhysicalRestorePatchZipName -InstallInfo $InstallInfo
 $RestoreOutDir = Join-Path $RepoRoot "output\restore"
 $RestoreOutZip = Join-Path $RestoreOutDir $RestoreZipName
+$PhysicalRestoreOutZip = Join-Path $RestoreOutDir $PhysicalRestoreZipName
 $PatchFolderRestoreZip = Join-Path $RepoRoot $RestoreZipName
-$GameRootRestoreZip = Join-Path $Poe2Dir $RestoreZipName
-$CleanDat = Join-Path $RepoRoot "output\dat_files_latest\data\data_balance_traditional chinese_baseitemtypes.datc64"
+$PatchFolderPhysicalRestoreZip = Join-Path $RepoRoot $PhysicalRestoreZipName
+$CleanDat = Join-Path $RepoRoot ("output\dat_files_latest\data\" + $InstallInfo.LanguageFileSlug)
 
 Write-Host "POE2 price patch restore" -ForegroundColor Green
 Write-Host "Game dir : $Poe2Dir"
 Write-Host "Patch dir: $RepoRoot"
+Write-Host "Detected : $($InstallInfo.DisplayName)" -ForegroundColor Cyan
 Write-Host "Mode     : $GameMode" -ForegroundColor Cyan
+Write-Host "Language : $($InstallInfo.LanguageName) ($($InstallInfo.ConfigLanguage))" -ForegroundColor Cyan
+Write-Host "Target   : $($InstallInfo.TcBaseItemsPath)" -ForegroundColor Cyan
+if ($InstallInfo.LanguageDefaulted) {
+    Write-Warning $InstallInfo.LanguageDefaultReason
+}
 
 if ($GameMode -eq "GGPK") {
     Assert-File $ContentGgpk "Content.ggpk"
@@ -135,87 +498,92 @@ if ($GameMode -eq "GGPK") {
     Assert-File $BundledPatchRuntimeConfig "PatchBundledGGPK3.runtimeconfig.json"
 }
 else {
-    # Bundles2 (Steam/Epic) 模式
     Assert-File $Bundles2Paths.IndexBin "Bundles2 _.index.bin"
-    # 检查工具
-    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
-        $BundledBundleExtractorExe = Join-Path $CodeToolsRoot "BundleExtractor\BundleExtractor.exe"
-    }
-    if (-not (Test-Path -LiteralPath $BundledBundleExtractorExe -PathType Leaf)) {
-        throw "Missing BundleExtractor.exe: $BundledBundleExtractorExe"
-    }
-    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
-        $BundledOodleDll = Join-Path $CodeToolsRoot "BundleExtractor\oo2core.dll"
-    }
-    if (-not (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
-        throw "Missing oo2core.dll: $BundledOodleDll"
-    }
+    Resolve-BundleExtractor
 }
 $Dotnet = Ensure-DotNet8Runtime -RepoRoot $RepoRoot
 
+if ($GameMode -eq "Bundles2") {
+    $PhysicalRestoreZip = ""
+    foreach ($Candidate in (Get-PhysicalRestoreZipCandidates)) {
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+            try {
+                Assert-PhysicalRestoreZip $Candidate
+                $PhysicalRestoreZip = (Resolve-Path -LiteralPath $Candidate).Path
+                break
+            }
+            catch {
+                Write-Warning "Ignore invalid physical restore zip: $Candidate"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PhysicalRestoreZip)) {
+        if ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*") {
+            throw "Missing fixed physical restore zip. Put $PhysicalRestoreZipName in the patch folder, then re-run."
+        }
+        Write-Warning "Missing physical restore zip: $PhysicalRestoreZipName"
+        Write-Warning "Steam/Epic restore will fall back to PatchBundle3. If it shows 'Failed to create mutex', verify game files once, then run one-key update to create the physical restore package."
+    }
+    else {
+        Write-Step "Restore physical Bundles2 files"
+        Write-Host "Restore: $PhysicalRestoreZip"
+        if ($NoInstall) {
+            Write-Host "NoInstall enabled. Restore package verified; game files were not changed." -ForegroundColor Yellow
+            return
+        }
+        Restore-PhysicalBundles2 -Path $PhysicalRestoreZip
+        Write-Host "Physical Bundles2 restore complete." -ForegroundColor Green
+        return
+    }
+}
+
 function Ensure-CleanBaseItemForRestore {
-    # 在 Bundles2 模式下，如果缓存的 clean 文件不存在或看起来已修补，需要重新提取
-    
     if (Test-Path -LiteralPath $CleanDat -PathType Leaf) {
         if (-not (Test-BaseItemsLookPatched $CleanDat)) {
             return $CleanDat
         }
-        Write-Host "Cached BaseItemTypes looks patched. Re-extracting from bundle..." -ForegroundColor Yellow
+        Write-Host "Cached BaseItemTypes looks patched. Re-extracting from game files..." -ForegroundColor Yellow
     }
-    
-    # 需要从 bundle 重新提取
+
+    if ($GameMode -eq "GGPK") {
+        throw "No clean restore zip found. Run update once from a clean game state, or provide -RestoreZip."
+    }
+
     Write-Step "Extract clean BaseItemTypes from Bundles2"
-    
     $ExtractDir = Split-Path -Parent $CleanDat
     New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
-    
-    # 确保 oo2core.dll 在 BundleExtractor 旁边
-    $ExtractorDir = Split-Path -Parent $BundledBundleExtractorExe
-    $ExtractorOodle = Join-Path $ExtractorDir "oo2core.dll"
-    if (-not (Test-Path -LiteralPath $ExtractorOodle -PathType Leaf) -and (Test-Path -LiteralPath $BundledOodleDll -PathType Leaf)) {
-        Copy-Item -LiteralPath $BundledOodleDll -Destination $ExtractorOodle -Force
-    }
-    
+
     Write-Host "Extracting from: $($Bundles2Paths.IndexBin)"
-    Write-Host "File: $($Bundles2Paths.TcBaseItems)"
+    Write-Host "File: $($InstallInfo.TcBaseItemsPath)"
     Write-Host "Output: $CleanDat"
-    
-    & $BundledBundleExtractorExe $Bundles2Paths.IndexBin $Bundles2Paths.TcBaseItems $CleanDat
+
+    & $BundledBundleExtractorExe $Bundles2Paths.IndexBin $InstallInfo.TcBaseItemsPath $CleanDat
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to extract clean BaseItemTypes. Exit code: $LASTEXITCODE"
     }
-    
-    # 验证提取的文件
+
     if (Test-BaseItemsLookPatched $CleanDat) {
-        throw "Extracted BaseItemTypes still looks patched. Something is wrong."
+        throw "Extracted BaseItemTypes still looks patched. Restore zip is required."
     }
-    
+
     return $CleanDat
 }
 
 if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
-    # 尝试查找现有的还原补丁
-    $Candidates = @($PatchFolderRestoreZip, $RestoreOutZip, $GameRootRestoreZip)
-    foreach ($Candidate in $Candidates) {
+    foreach ($Candidate in (Get-RestoreZipCandidates)) {
         if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+            if (-not (Test-RestoreZipUsable $Candidate)) {
+                Write-Warning "Ignore restore zip for a different or invalid language target: $Candidate"
+                continue
+            }
             $RestoreZip = (Resolve-Path -LiteralPath $Candidate).Path
             break
         }
     }
-    
-    # 如果没有找到还原补丁，创建一个
+
     if ([string]::IsNullOrWhiteSpace($RestoreZip)) {
-        Write-Step "Build restore zip from clean BaseItemTypes"
-        
-        if ($GameMode -eq "GGPK") {
-            New-BaseItemRestoreZip $CleanDat $RestoreOutZip
-        }
-        else {
-            # Bundles2 模式：先确保有 clean 的文件
-            $CleanSource = Ensure-CleanBaseItemForRestore
-            New-BaseItemRestoreZip $CleanSource $RestoreOutZip
-        }
-        $RestoreZip = $RestoreOutZip
+        throw "Missing fixed restore zip. Put $RestoreZipName in the patch folder, then re-run."
     }
 }
 else {
@@ -224,20 +592,62 @@ else {
 
 Assert-RestoreZip $RestoreZip
 
-if ($RestoreZip -ne $PatchFolderRestoreZip) {
+$RestoreEntryTemp = ""
+$CurrentCheck = $null
+try {
+    if ($GameMode -eq "GGPK") {
+        Write-Step "Check restore patch compatibility"
+        $CurrentCheck = Extract-CurrentGgpkBaseItemsForRestoreCheck
+        $RestoreEntryTemp = Get-ZipBaseItemsEntryAsTempFile -ZipPath $RestoreZip -EntryName $InstallInfo.TcBaseItemsPath
+        if (-not (Test-BaseItemsCompatible $RestoreEntryTemp $CurrentCheck.Dat)) {
+            throw "Restore zip is outdated for the current game files. Run the official launcher until the game is clean, then run one-key update to refresh restore packages."
+        }
+        Write-Host "Restore package matches current game data." -ForegroundColor Green
+    }
+    elseif (-not ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*")) {
+        $CleanDatForCheck = Ensure-CleanBaseItemForRestore
+        $RestoreEntryTemp = Get-ZipBaseItemsEntryAsTempFile -ZipPath $RestoreZip -EntryName $InstallInfo.TcBaseItemsPath
+        if (-not (Test-BaseItemsCompatible $RestoreEntryTemp $CleanDatForCheck)) {
+            throw "Restore zip is outdated for the current game files. Run the official launcher until the game is clean, then run one-key update to refresh restore packages."
+        }
+    }
+}
+finally {
+    if (-not [string]::IsNullOrWhiteSpace($RestoreEntryTemp) -and (Test-Path -LiteralPath $RestoreEntryTemp -PathType Leaf)) {
+        Remove-Item -LiteralPath $RestoreEntryTemp -Force
+    }
+    if ($null -ne $CurrentCheck -and (Test-Path -LiteralPath $CurrentCheck.Dir -PathType Container)) {
+        Remove-Item -LiteralPath $CurrentCheck.Dir -Recurse -Force
+    }
+}
+
+if ($RestoreZip -ne $PatchFolderRestoreZip -and -not ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*")) {
     Copy-Item -LiteralPath $RestoreZip -Destination $PatchFolderRestoreZip -Force
 }
-Copy-Item -LiteralPath $RestoreZip -Destination $GameRootRestoreZip -Force
+
+$InstallRestoreZip = $RestoreZip
+if (-not ([bool]$InstallInfo.IsChina -or [string]$InstallInfo.InstallKind -like "CN-*")) {
+    $SingleTargetRestoreZip = Join-Path $RestoreOutDir ([string]::Concat("install_", $RestoreZipName))
+    $InstallRestoreZip = New-CurrentTargetRestoreZip -SourceZip $RestoreZip -OutputZip $SingleTargetRestoreZip
+}
+
+if ($NoInstall) {
+    Write-Step "Verify restore patch only"
+    Write-Host "Restore : $RestoreZip"
+    Write-Host "Install : $InstallRestoreZip"
+    Write-Host "NoInstall enabled. Restore package verified; game files were not changed." -ForegroundColor Yellow
+    return
+}
 
 if ($GameMode -eq "GGPK") {
     Write-Step "Install restore patch into Content.ggpk"
     Write-Host "Installer: $BundledPatchDll"
     Write-Host "GGPK     : $ContentGgpk"
-    Write-Host "Patch    : $GameRootRestoreZip"
+    Write-Host "Patch    : $InstallRestoreZip"
 
     Push-Location -LiteralPath $BundledInstallerDir
     try {
-        $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $GameRootRestoreZip 2>&1
+        $InstallerOutput = "" | & $Dotnet $BundledPatchDll $ContentGgpk $InstallRestoreZip 2>&1
         $InstallerOutput | ForEach-Object { Write-Host $_ }
         $InstallerText = ($InstallerOutput | Out-String)
         if ($LASTEXITCODE -ne 0 -or $InstallerText -match 'Exception|Unhandled|錯誤|错误|失敗|失败') {
@@ -248,28 +658,46 @@ if ($GameMode -eq "GGPK") {
         Pop-Location
     }
 
-    Write-Host ""
     Write-Host "Restore installed into Content.ggpk." -ForegroundColor Green
 }
 else {
     Write-Step "Install restore patch into Bundles2 using PatchBundle3"
-    
-    # 检查 PatchBundle3.exe
-    if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+
+    $UsePatchBundleDll = Test-Path -LiteralPath $BundledBundlePatchDll -PathType Leaf
+    if (-not $UsePatchBundleDll -and -not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
         $BundledBundlePatchExe = Join-Path $CodeToolsRoot "PatchBundle3.exe"
     }
-    if (-not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
-        throw "Missing PatchBundle3.exe: $BundledBundlePatchExe"
+    if (-not $UsePatchBundleDll -and -not (Test-Path -LiteralPath $BundledBundlePatchExe -PathType Leaf)) {
+        throw "Missing PatchBundle3.dll or PatchBundle3.exe: $BundledBundlePatchDll"
     }
-    
-    Write-Host "Bundle3: $($BundledBundlePatchExe)"
+
+    if ($UsePatchBundleDll) {
+        Write-Host "Bundle3: $($BundledBundlePatchDll)"
+    }
+    else {
+        Write-Host "Bundle3: $($BundledBundlePatchExe)"
+    }
     Write-Host "Index  : $($Bundles2Paths.IndexBin)"
-    Write-Host "Patch  : $GameRootRestoreZip"
-    
-    & $BundledBundlePatchExe $Bundles2Paths.IndexBin $GameRootRestoreZip
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host "Patch  : $InstallRestoreZip"
+
+    Push-Location -LiteralPath $BundledInstallerDir
+    try {
+        if ($UsePatchBundleDll) {
+            $BundlePatchOutput = & $Dotnet $BundledBundlePatchDll $Bundles2Paths.IndexBin $InstallRestoreZip 2>&1
+        }
+        else {
+            $BundlePatchOutput = & $BundledBundlePatchExe $Bundles2Paths.IndexBin $InstallRestoreZip 2>&1
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    $BundlePatchOutput | ForEach-Object { Write-Host $_ }
+    $BundlePatchText = ($BundlePatchOutput | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $BundlePatchText -match 'Exception|Unhandled|FileNotFound|Could not load|Error:|錯誤|错误|失敗|失败') {
         throw "PatchBundle3 restore failed. Exit code: $LASTEXITCODE"
     }
-    
+
     Write-Host "Restore installed into Bundles2." -ForegroundColor Green
 }

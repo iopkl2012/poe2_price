@@ -71,84 +71,109 @@ def build():
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = title.add_run("POE2 物价补丁使用文档")
+    r = title.add_run("POE2 三服合一物价补丁使用文档")
     set_font(r)
     r.font.size = Pt(20)
     r.font.bold = True
 
     for line in [
-        "温馨提示：打补丁=修改游戏文件=有被封号的风险！！！",
-        "打补丁=修改游戏文件=有被封号的风险！！！",
-        "打补丁=修改游戏文件=有被封号的风险！！！",
-        "重要的事情说三遍。",
+        "重要提示：打补丁会修改游戏文件，存在封号或校验风险。",
+        "请在关闭游戏后运行，并自行确认可以接受风险。",
+        "程序会自动识别国服 WeGame、国际服官方 GGPK、国际服 Steam/Epic Bundles2。",
     ]:
-        para(doc, line, 18, True, (192, 0, 0), WD_ALIGN_PARAGRAPH.CENTER, 2, 1.0)
+        para(doc, line, 14, True, (192, 0, 0), WD_ALIGN_PARAGRAPH.CENTER, 2, 1.0)
 
     para(doc, "一、发布版怎么放", 13, True, after=4)
-    para(doc, "把整个“物价补丁”文件夹放到游戏根目录，和 Content.ggpk 同级。脚本会自动识别上一级目录，不写死盘符。")
+    para(doc, "把整个“物价补丁”文件夹放到 POE2 游戏根目录。脚本会自动识别上一级目录，不写死盘符。")
     bullets(
         doc,
         [
-            "D:\\poe2\\Content.ggpk",
-            "D:\\poe2\\物价补丁\\一键更新物价补丁.exe",
-            "D:\\poe2\\物价补丁\\一键还原物价补丁.exe",
+            r"<POE2游戏根目录>\Content.ggpk",
+            r"<POE2游戏根目录>\Bundles2\_.index.bin",
+            r"<POE2游戏根目录>\物价补丁\一键更新物价补丁.exe",
+            r"<POE2游戏根目录>\物价补丁\一键还原物价补丁.exe",
         ],
     )
 
-    para(doc, "二、一键更新", 13, True, after=4)
+    para(doc, "二、自动识别", 13, True, after=4)
+    bullets(
+        doc,
+        [
+            "检测到 Content.ggpk：按国际服官方 GGPK 处理。",
+            "检测到 Bundles2 且有 WeGame/腾讯文件特征：按国服 WeGame Bundles2 处理。",
+            "检测到 Bundles2 且没有 WeGame/腾讯文件特征：按国际服 Steam/Epic Bundles2 处理。",
+            "国际服会读取当前游戏 language 设置，自动写入对应语言的 BaseItemTypes。",
+        ],
+    )
+
+    para(doc, "三、一键更新", 13, True, after=4)
     nums(
         doc,
         [
             "关闭游戏。",
             "双击“一键更新物价补丁.exe”。",
-            "程序会直接使用发布版内置的 .NET 8 运行时和 Python 3.10，不再下载运行环境。",
-            "如果发布包缺文件，程序会直接提示“发布包不完整”。",
-            "程序会导出最新物品名表，抓取 poe2scout 价格，生成并打入 物价补丁.zip。",
+            "程序会提取英文表和当前客户端目标语言表。",
+            "程序会抓取 poe2scout 国际服价格，并把价格追加为“=数字D/E”。",
+            "程序会生成“物价补丁.zip”和“还原物价补丁.zip”。Bundles2 模式还会生成“真实还原物价补丁.zip”。",
+            "程序会把补丁写回对应游戏包。",
         ],
     )
 
-    para(doc, "三、一键还原", 13, True, after=4)
+    para(doc, "四、一键还原", 13, True, after=4)
     nums(
         doc,
         [
             "关闭游戏。",
             "双击“一键还原物价补丁.exe”。",
-            "程序会使用 还原物价补丁.zip，把原版 baseitemtypes.datc64 打回 Content.ggpk。",
+            "Bundles2 模式会使用“真实还原物价补丁.zip”恢复打补丁前的物理文件。",
+            "GGPK 模式会使用“还原物价补丁.zip”写回当前客户端对应的 BaseItemTypes。",
+            "如果没有可用还原包，程序会拒绝做不完整还原。",
         ],
     )
 
-    para(doc, "四、发布版文件说明", 13, True, after=4)
+    para(doc, "五、补丁范围", 13, True, after=4)
     bullets(
         doc,
         [
-            "一键更新物价补丁.exe：生成最新价格并自动打补丁。",
-            "一键还原物价补丁.exe：还原原版物品名。",
-            "物价补丁.zip：当前生成的物价补丁包。",
-            "还原物价补丁.zip：用于恢复的补丁包。",
-            "tools\\dotnet-runtime：内置 .NET 8 运行时，不要删除。",
-            "tools\\python：内置 Python 3.10 运行时和依赖，不要删除。",
-            "tools：运行时工具目录，不要删除。",
-            "一键安装特殊补丁工具：底层打入 Content.ggpk 的工具目录，不要删除。",
+            "国服 WeGame：data/balance/simplified chinese/baseitemtypes.datc64。",
+            "国际服官方 / Steam / Epic：按当前游戏语言写入，例如繁中为 data/balance/traditional chinese/baseitemtypes.datc64，英文为 data/balance/baseitemtypes.datc64。",
+            "需要手动指定语言时，可设置 POE2_PATCH_LANGUAGE，例如 zh-TW、en、ja。",
+            "Bundles2 模式不覆盖完整 _.index.bin 或 Tiny*.bundle.bin。",
+            "Bundles2 还原会恢复安装前备份的 _.index.bin 和 LibGGPK3 状态。",
+            "如果其他补丁没有改同一个 BaseItemTypes 资源，通常不会被本工具影响。",
+            "如果其他补丁也改了同一个 BaseItemTypes 资源，最后写入者会覆盖同资源内对应字段。",
         ],
     )
 
-    para(doc, "五、关于代码封装", 13, True, after=4)
-    para(doc, "发布版不再放 bat，也不直接暴露 ps1/py 明文脚本。脚本代码已加密封装在 exe 内，运行时临时解密执行，结束后自动清理。")
-    para(doc, "这不是安全承诺，只是防止普通用户误删、误改脚本。真正使用前仍然要确认上面的封号风险。")
-
-    para(doc, "六、常见问题", 13, True, after=4)
+    para(doc, "六、文件说明", 13, True, after=4)
     bullets(
         doc,
         [
-            "导出失败：通常是游戏还在运行，关闭游戏后再运行。",
-            "缺少价格：可能是 poe2scout 暂无数据，或游戏里存在同名不同路径条目。",
-            "运行时报毒：自制 exe、加密脚本和修改游戏文件都可能触发杀软敏感提示，需要用户自行判断风险。",
+            "一键更新物价补丁.exe：抓价、生成补丁并写入游戏包。",
+            "一键还原物价补丁.exe：还原对应 BaseItemTypes。",
+            "物价补丁.zip：运行时生成的当前物价补丁包。",
+            "还原物价补丁.zip：运行时生成或保存的恢复包。",
+            "真实还原物价补丁.zip：Bundles2 模式的物理级恢复包。",
+            r"tools\dotnet-runtime：内置 .NET 8 runtime，不要删除。",
+            r"tools\python：内置 Python 和依赖，不要删除。",
+            "一键安装特殊补丁工具：底层写入工具目录，不要删除。",
+        ],
+    )
+
+    para(doc, "七、常见问题", 13, True, after=4)
+    bullets(
+        doc,
+        [
+            "提示找不到游戏目录：请确认物价补丁文件夹放在 POE2 游戏根目录。",
+            "提取或写入失败：请先关闭游戏和可能占用文件的工具。",
+            "缺少价格：可能是 poe2scout 暂无该物品数据，或英文名无法匹配本地物品表。",
+            "杀软报毒：自制 exe、加密脚本和修改游戏文件都可能触发敏感提示，需要自行判断风险。",
         ],
     )
 
     footer = sec.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fr = footer.add_run("POE2 物价补丁发布版")
+    fr = footer.add_run("POE2 三服合一物价补丁")
     set_font(fr)
     fr.font.size = Pt(9)
     fr.font.color.rgb = RGBColor(128, 128, 128)

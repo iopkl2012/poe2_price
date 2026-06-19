@@ -1,19 +1,40 @@
-# 编译输出（保留源码）
+# 编译输出
 build/**/bin/
 build/**/obj/
 build/**/publish/
+build/publish-*/
+build/payload/
+build/payload.zip
+build/downloads/
+build/restore_baseitems_cache/
+build/Poe2PatchLauncher/payload.enc
 
-# 运行时输出
+# 运行时和发布输出
+output/
+发布版/
+三服合一物价补丁构建版/
 物价补丁/output/
+物价补丁/tools/BundleExtractor/
+物价补丁/tools/dotnet-runtime/
+物价补丁/tools/python/
 
-# 生成的补丁文件
+# 生成的补丁和还原包
 物价补丁/物价补丁.zip
 物价补丁/还原物价补丁.zip
+物价补丁/真实还原物价补丁.zip
+物价补丁/国服还原包.zip
+物价补丁/国际服还原补丁.zip
 物价补丁/一键安装特殊补丁工具/物价补丁.zip
+物价补丁/一键安装特殊补丁工具/还原物价补丁.zip
+物价补丁/一键安装特殊补丁工具/真实还原物价补丁.zip
+restore-seeds/*.zip
 
-# 临时文件
+# 缓存和临时文件
+__pycache__/
+*.py[cod]
 *.tmp
 *.log
 
-# VS Code 配置
+# 本地编辑器配置
 .vscode/
+.idea/

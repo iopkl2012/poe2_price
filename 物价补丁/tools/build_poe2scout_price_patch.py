@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fetch POE2 Scout exchange prices and build a PoE2 item-name price patch.
+Fetch POE2 Scout exchange prices and build a PoE2 CN item-name price patch.
 
 Network fetching uses requests + ThreadPoolExecutor + retry/backoff. Playwright
 is only useful for discovering the endpoints; this script performs the real
@@ -44,7 +44,7 @@ DEFAULT_TC_BASEITEMS = (
     / "output"
     / "dat_files_latest"
     / "data"
-    / "data_balance_traditional chinese_baseitemtypes.datc64"
+    / "data_balance_simplified chinese_baseitemtypes.datc64"
 )
 DEFAULT_PATCH_SCRIPT = Path(__file__).with_name("poe2_name_price_patch.py")
 DISPLAY_NAME_FIELD_INDEX = 8
@@ -488,6 +488,7 @@ def run_patch_builder(
     report: Path,
     mode: str,
     patched_dat: Path | None,
+    game_path: str | None,
 ) -> None:
     cmd = [
         sys.executable,
@@ -505,6 +506,8 @@ def run_patch_builder(
         mode,
         "--keep-existing-price",
     ]
+    if game_path:
+        cmd.extend(["--game-path", game_path])
     if patched_dat:
         cmd.extend(["--patched-dat", str(patched_dat)])
     subprocess.run(cmd, check=True)
@@ -528,6 +531,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-zip", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--patched-dat", type=Path)
+    parser.add_argument("--game-path")
     parser.add_argument(
         "--mode",
         choices=["append", "fixed"],
@@ -605,6 +609,7 @@ def main(argv: list[str]) -> int:
             report=args.report or (args.out_dir / "price_patch.report.json"),
             mode=args.mode,
             patched_dat=args.patched_dat,
+            game_path=args.game_path,
         )
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))

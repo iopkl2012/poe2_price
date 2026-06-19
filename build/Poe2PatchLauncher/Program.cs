@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -69,6 +69,8 @@ internal static class Program
                     throw new InvalidOperationException("Failed to start powershell.exe.");
                 }
                 process.WaitForExit();
+                PrintCompletion(mode, process.ExitCode);
+                WaitForEnter();
                 return process.ExitCode;
             }
             finally
@@ -81,13 +83,33 @@ internal static class Program
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("启动失败: " + ex.Message);
             Console.ResetColor();
-            Console.WriteLine();
-            Console.WriteLine("按任意键退出 . . .");
-            Console.ReadKey(intercept: true);
+            WaitForEnter();
             return 1;
         }
     }
 
+    private static void PrintCompletion(string mode, int exitCode)
+    {
+        Console.WriteLine();
+        if (exitCode == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(mode == "restore" ? "还原成功。" : "更新成功。");
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine((mode == "restore" ? "还原失败" : "更新失败") + $"，退出码：{exitCode}");
+        }
+        Console.ResetColor();
+    }
+
+    private static void WaitForEnter()
+    {
+        Console.WriteLine();
+        Console.Write("按回车键关闭窗口 . . .");
+        Console.ReadLine();
+    }
     private static void ExtractPayload(string targetDir)
     {
         using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.enc");
@@ -159,3 +181,4 @@ internal static class Program
         }
     }
 }
+

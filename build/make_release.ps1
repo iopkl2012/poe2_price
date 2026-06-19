@@ -10,6 +10,7 @@ $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $BuildDir = Join-Path $Root "build"
 $PatchSourceDir = Join-Path $Root "物价补丁"
 $SourceToolsDir = Join-Path $PatchSourceDir "tools"
+$SpecialToolDir = Join-Path $PatchSourceDir "一键安装特殊补丁工具"
 $ReleaseDir = Join-Path $Root "发布版\物价补丁"
 $ReleaseToolsDir = Join-Path $ReleaseDir "tools"
 $PayloadDir = Join-Path $BuildDir "payload"
@@ -17,9 +18,31 @@ $PayloadZip = Join-Path $BuildDir "payload.zip"
 $PayloadEnc = Join-Path $BuildDir "Poe2PatchLauncher\payload.enc"
 $LauncherProject = Join-Path $BuildDir "Poe2PatchLauncher\Poe2PatchLauncher.csproj"
 $PackerProject = Join-Path $BuildDir "PayloadPacker\PayloadPacker.csproj"
+$BundleExtractorProject = Join-Path $BuildDir "BundleExtractor\BundleExtractor.csproj"
 $PublishDir = Join-Path $BuildDir "publish-self"
+$BundleExtractorPublishDir = Join-Path $BuildDir "publish-bundle-extractor"
 $DocScript = Join-Path $BuildDir "create_release_doc.py"
 $DownloadsDir = Join-Path $BuildDir "downloads"
+$WorkspaceRoot = (Resolve-Path -LiteralPath (Join-Path $Root "..")).Path
+$FinalReleaseDir = Join-Path $WorkspaceRoot "三服合一物价补丁构建版\物价补丁"
+$RestoreSeedDir = Join-Path $Root "restore-seeds"
+$ChinaRestoreSeedCandidates = @(
+    (Join-Path $RestoreSeedDir "国服还原包.zip"),
+    (Join-Path $WorkspaceRoot "国服还原包.zip")
+)
+$IntlRestoreSeedCandidates = @(
+    (Join-Path $RestoreSeedDir "国际服还原补丁.zip"),
+    (Join-Path $WorkspaceRoot "国际服还原补丁.zip")
+)
+$ChinaRestoreSeed = $null
+$IntlRestoreSeed = $null
+$RestoreBaseItemsCacheDir = Join-Path $BuildDir "restore_baseitems_cache"
+$IntlBaseItemsRestoreSeedCandidates = @(
+    (Join-Path $WorkspaceRoot "三服合一物价补丁构建版\物价补丁\国际服还原补丁.zip"),
+    (Join-Path $WorkspaceRoot "三服合一物价补丁构建版\物价补丁\output\restore\国际服还原补丁.zip"),
+    (Join-Path $WorkspaceRoot "poe2国际服物价补丁构建版\物价补丁\还原物价补丁.zip"),
+    (Join-Path $WorkspaceRoot "备份\物价补丁\还原物价补丁.zip")
+)
 
 Set-Location -LiteralPath $Root
 
@@ -101,6 +124,112 @@ function Write-Step {
 
     Write-Host ""
     Write-Host "==> $Text" -ForegroundColor Cyan
+}
+
+function Resolve-FirstExistingFile {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    foreach ($Candidate in $Candidates) {
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $Candidate).Path
+        }
+    }
+
+    $Message = "Missing $Name. Checked:`n  " + ($Candidates -join "`n  ")
+    throw $Message
+}
+
+function Copy-IntlRestorePackage {
+    param([Parameter(Mandatory = $true)][string]$Destination)
+
+    $BaseItemEntryNames = @(
+        "data/balance/baseitemtypes.datc64",
+        "data/balance/traditional chinese/baseitemtypes.datc64",
+        "data/balance/simplified chinese/baseitemtypes.datc64",
+        "data/balance/japanese/baseitemtypes.datc64",
+        "data/balance/korean/baseitemtypes.datc64",
+        "data/balance/russian/baseitemtypes.datc64",
+        "data/balance/french/baseitemtypes.datc64",
+        "data/balance/german/baseitemtypes.datc64",
+        "data/balance/spanish/baseitemtypes.datc64",
+        "data/balance/portuguese/baseitemtypes.datc64",
+        "data/balance/thai/baseitemtypes.datc64"
+    )
+    Copy-Item -LiteralPath $IntlRestoreSeed -Destination $Destination -Force
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    $TargetArchive = [System.IO.Compression.ZipFile]::Open($Destination, [System.IO.Compression.ZipArchiveMode]::Update)
+    try {
+        foreach ($BaseItemEntryName in $BaseItemEntryNames) {
+            $CacheName = $BaseItemEntryName.Replace("/", "_").Replace(" ", "-")
+            $CacheDat = Join-Path $RestoreBaseItemsCacheDir $CacheName
+
+            $SourceEntry = $null
+            $SourceArchive = $null
+            if (Test-Path -LiteralPath $CacheDat -PathType Leaf) {
+                $OldEntry = $TargetArchive.GetEntry($BaseItemEntryName)
+                if ($null -ne $OldEntry) {
+                    $OldEntry.Delete()
+                }
+                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $TargetArchive,
+                    $CacheDat,
+                    $BaseItemEntryName,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                ) | Out-Null
+                continue
+            }
+
+            foreach ($Candidate in $IntlBaseItemsRestoreSeedCandidates) {
+                if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+                    continue
+                }
+
+                $Archive = [System.IO.Compression.ZipFile]::OpenRead($Candidate)
+                $Entry = $Archive.GetEntry($BaseItemEntryName)
+                if ($null -ne $Entry -and $Entry.Length -gt 1048576) {
+                    $SourceArchive = $Archive
+                    $SourceEntry = $Entry
+                    break
+                }
+
+                $Archive.Dispose()
+            }
+
+            if ($null -eq $SourceEntry) {
+                throw "Missing clean BaseItemTypes restore entry: $BaseItemEntryName"
+            }
+
+            try {
+                $OldEntry = $TargetArchive.GetEntry($BaseItemEntryName)
+                if ($null -ne $OldEntry) {
+                    $OldEntry.Delete()
+                }
+
+                $NewEntry = $TargetArchive.CreateEntry($BaseItemEntryName, [System.IO.Compression.CompressionLevel]::Optimal)
+                $Input = $SourceEntry.Open()
+                $Output = $NewEntry.Open()
+                try {
+                    $Input.CopyTo($Output)
+                }
+                finally {
+                    $Output.Dispose()
+                    $Input.Dispose()
+                }
+            }
+            finally {
+                $SourceArchive.Dispose()
+            }
+        }
+    }
+    finally {
+        $TargetArchive.Dispose()
+    }
 }
 
 function Test-DotNet8Runtime {
@@ -321,6 +450,33 @@ function Build-Payload {
     )
 }
 
+function Prepare-ReleaseSeedFiles {
+    Write-Step "Prepare release seed files"
+    $script:ChinaRestoreSeed = Resolve-FirstExistingFile -Candidates $ChinaRestoreSeedCandidates -Name "国服还原包.zip"
+    $script:IntlRestoreSeed = Resolve-FirstExistingFile -Candidates $IntlRestoreSeedCandidates -Name "国际服还原补丁.zip"
+    $script:IntlBaseItemsRestoreSeedCandidates = @($script:IntlRestoreSeed) + $IntlBaseItemsRestoreSeedCandidates
+
+    Set-Content -LiteralPath (Join-Path $PatchSourceDir "请先看使用文档.txt") -Encoding UTF8 -Value "请先打开使用文档.docx。把整个物价补丁文件夹放到 POE2 游戏根目录；关闭游戏后再运行一键更新或一键还原。程序会自动识别国服 WeGame、国际服官方 GGPK、国际服 Steam/Epic Bundles2。"
+
+    foreach ($GeneratedZip in @(
+        (Join-Path $PatchSourceDir "物价补丁.zip"),
+        (Join-Path $PatchSourceDir "还原物价补丁.zip"),
+        (Join-Path $PatchSourceDir "真实还原物价补丁.zip"),
+        (Join-Path $PatchSourceDir "一键安装特殊补丁工具\物价补丁.zip"),
+        (Join-Path $PatchSourceDir "一键安装特殊补丁工具\还原物价补丁.zip"),
+        (Join-Path $PatchSourceDir "一键安装特殊补丁工具\真实还原物价补丁.zip")
+    )) {
+        if (Test-Path -LiteralPath $GeneratedZip -PathType Leaf) {
+            Remove-Item -LiteralPath $GeneratedZip -Force
+        }
+    }
+
+    Assert-File -Path $ChinaRestoreSeed -Name "国服还原包.zip"
+    Assert-File -Path $IntlRestoreSeed -Name "国际服还原补丁.zip"
+    Copy-Item -LiteralPath $ChinaRestoreSeed -Destination (Join-Path $PatchSourceDir "国服还原包.zip") -Force
+    Copy-IntlRestorePackage -Destination (Join-Path $PatchSourceDir "国际服还原补丁.zip")
+}
+
 function Publish-Launcher {
     Write-Step "Publish self-contained launcher"
     Remove-TreeSafe -Path $PublishDir -RootPath $Root
@@ -341,6 +497,33 @@ function Publish-Launcher {
     )
 }
 
+function Publish-BundleExtractor {
+    Write-Step "Publish BundleExtractor from source"
+    Remove-TreeSafe -Path $BundleExtractorPublishDir -RootPath $Root
+    Assert-File -Path $BundleExtractorProject -Name "BundleExtractor project"
+
+    Invoke-Checked -FilePath "dotnet" -ArgumentList @(
+        "publish",
+        $BundleExtractorProject,
+        "-c", "Release",
+        "-r", "win-x64",
+        "-p:SelfContained=true",
+        "-p:PublishSingleFile=true",
+        "-p:EnableCompressionInSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false",
+        "-o", $BundleExtractorPublishDir
+    )
+
+    $BundleExtractorDir = Join-Path $SourceToolsDir "BundleExtractor"
+    New-DirectorySafe -Path $BundleExtractorDir -RootPath $Root | Out-Null
+    Assert-File -Path (Join-Path $BundleExtractorPublishDir "BundleExtractor.exe") -Name "published BundleExtractor"
+    Copy-Item -LiteralPath (Join-Path $BundleExtractorPublishDir "BundleExtractor.exe") -Destination (Join-Path $BundleExtractorDir "BundleExtractor.exe") -Force
+    Assert-File -Path (Join-Path $SpecialToolDir "oo2core.dll") -Name "oo2core.dll"
+    Copy-Item -LiteralPath (Join-Path $SpecialToolDir "oo2core.dll") -Destination (Join-Path $BundleExtractorDir "oo2core.dll") -Force
+}
+
 function Build-ReleaseFolder {
     Write-Step "Assemble release folder"
     Remove-TreeSafe -Path $ReleaseDir -RootPath $Root
@@ -352,21 +535,26 @@ function Build-ReleaseFolder {
     Copy-Item -LiteralPath $LauncherExe -Destination (Join-Path $ReleaseDir "一键更新物价补丁.exe") -Force
     Copy-Item -LiteralPath $LauncherExe -Destination (Join-Path $ReleaseDir "一键还原物价补丁.exe") -Force
 
-    foreach ($FileName in @("使用文档.docx", "请先看使用文档.txt", "物价补丁.zip", "还原物价补丁.zip")) {
+    foreach ($FileName in @("使用文档.docx", "请先看使用文档.txt")) {
+        $Source = Join-Path $PatchSourceDir $FileName
+        Assert-File -Path $Source -Name $FileName
+        Copy-Item -LiteralPath $Source -Destination (Join-Path $ReleaseDir $FileName) -Force
+    }
+
+    foreach ($FileName in @("国服还原包.zip", "国际服还原补丁.zip")) {
         $Source = Join-Path $PatchSourceDir $FileName
         Assert-File -Path $Source -Name $FileName
         Copy-Item -LiteralPath $Source -Destination (Join-Path $ReleaseDir $FileName) -Force
     }
 
     $ExtractorDir = Join-Path $SourceToolsDir "GGPKExtractor"
-    $SpecialToolDir = Join-Path $PatchSourceDir "一键安装特殊补丁工具"
+    $BundleExtractorDir = Join-Path $SourceToolsDir "BundleExtractor"
     Assert-Directory -Path $ExtractorDir -Name "GGPKExtractor"
+    Assert-Directory -Path $BundleExtractorDir -Name "BundleExtractor"
     Assert-Directory -Path $SpecialToolDir -Name "special patch tool"
     Copy-Item -LiteralPath $ExtractorDir -Destination $ReleaseToolsDir -Recurse -Force
+    Copy-Item -LiteralPath $BundleExtractorDir -Destination $ReleaseToolsDir -Recurse -Force
     Copy-Item -LiteralPath $SpecialToolDir -Destination $ReleaseDir -Recurse -Force
-
-    Copy-Item -LiteralPath (Join-Path $PatchSourceDir "物价补丁.zip") `
-        -Destination (Join-Path $ReleaseDir "一键安装特殊补丁工具\物价补丁.zip") -Force
 
     Prepare-DotNetRuntime -TargetDir (Join-Path $ReleaseToolsDir "dotnet-runtime")
     Prepare-PythonRuntime -TargetDir (Join-Path $ReleaseToolsDir "python")
@@ -379,12 +567,16 @@ function Test-ReleaseFolder {
         "一键还原物价补丁.exe",
         "使用文档.docx",
         "请先看使用文档.txt",
-        "物价补丁.zip",
-        "还原物价补丁.zip",
+        "国服还原包.zip",
+        "国际服还原补丁.zip",
         "tools\dotnet-runtime\dotnet.exe",
         "tools\python\python.exe",
         "tools\GGPKExtractor\GGPKExtractor.dll",
-        "一键安装特殊补丁工具\PatchBundledGGPK3.dll"
+        "tools\BundleExtractor\BundleExtractor.exe",
+        "tools\BundleExtractor\oo2core.dll",
+        "一键安装特殊补丁工具\PatchBundledGGPK3.dll",
+        "一键安装特殊补丁工具\PatchBundle3.dll",
+        "一键安装特殊补丁工具\PatchBundle3.runtimeconfig.json"
     )
 
     foreach ($Relative in $ExpectedFiles) {
@@ -398,12 +590,23 @@ function Test-ReleaseFolder {
     )
 }
 
+function Publish-FinalReleaseFolder {
+    Write-Step "Copy release folder to workspace build output"
+    Remove-TreeSafe -Path $FinalReleaseDir -RootPath $WorkspaceRoot
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $FinalReleaseDir) | Out-Null
+    Copy-Item -LiteralPath $ReleaseDir -Destination (Split-Path -Parent $FinalReleaseDir) -Recurse -Force
+}
+
 Build-Docs
+Prepare-ReleaseSeedFiles
+Publish-BundleExtractor
 Build-Payload
 Publish-Launcher
 Build-ReleaseFolder
 Test-ReleaseFolder
+Publish-FinalReleaseFolder
 
 Write-Host ""
 Write-Host "Release ready:" -ForegroundColor Green
 Write-Host "  $ReleaseDir"
+Write-Host "  $FinalReleaseDir"

@@ -9,11 +9,17 @@
 
   <ItemGroup>
     <Reference Include="LibBundle3">
-      <HintPath>..\LibGGPK3_tools\win-x64\LibBundle3.dll</HintPath>
+      <HintPath>..\..\物价补丁\一键安装特殊补丁工具\LibBundle3.dll</HintPath>
+      <Private>true</Private>
     </Reference>
     <Reference Include="SystemExtensions">
-      <HintPath>..\LibGGPK3_tools\win-x64\SystemExtensions.dll</HintPath>
+      <HintPath>..\..\物价补丁\一键安装特殊补丁工具\SystemExtensions.dll</HintPath>
+      <Private>true</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\物价补丁\一键安装特殊补丁工具\oo2core.dll" Link="oo2core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
