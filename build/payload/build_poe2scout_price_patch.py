@@ -65,6 +65,7 @@ class PriceObservation:
     price_exalted: Decimal
     value_traded: Decimal
     source_pair: str
+    display_price: str = ""
 
 
 @dataclass(frozen=True)
@@ -371,15 +372,36 @@ def divine_price_exalted(best: dict[str, PriceObservation]) -> Decimal:
     return Decimal("1")
 
 
+def divine_exalted_ratio_summary(divine_exalted: Decimal) -> dict[str, str]:
+    return {
+        "divine_orb": "1",
+        "exalted_orb": str(divine_exalted),
+        "text": f"1 Divine Orb = {divine_exalted} Exalted Orb",
+    }
+
+
 def format_price(price_exalted: Decimal, divine_exalted: Decimal) -> str:
     if price_exalted <= 0:
         return ""
     price_divine = price_exalted / divine_exalted if divine_exalted else Decimal("0")
-    if price_divine >= Decimal("0.01"):
+    if price_divine >= Decimal("0.1"):
         return f"{price_divine.quantize(Decimal('0.01'))}D"
     if price_exalted >= Decimal("10"):
         return f"{price_exalted.quantize(Decimal('0.1'))}E"
     return f"{price_exalted.quantize(Decimal('0.01'))}E"
+
+
+def is_reference_currency(obs: PriceObservation) -> bool:
+    return obs.api_id in {"divine", "exalted"}
+
+
+def apply_display_prices(
+    prices: dict[str, PriceObservation], divine_exalted: Decimal
+) -> None:
+    for obs in prices.values():
+        obs.display_price = "" if is_reference_currency(obs) else format_price(
+            obs.price_exalted, divine_exalted
+        )
 
 
 def match_prices_to_base_items(
@@ -397,10 +419,11 @@ def match_prices_to_base_items(
     missing: list[dict[str, str]] = []
     pending_poe2db: list[PriceObservation] = []
 
-    divine_exalted = divine_price_exalted(prices)
     for obs in prices.values():
+        if obs.price_exalted < Decimal("1") or not obs.display_price:
+            continue
         pair = by_en.get(obs.en_name) or by_en_norm.get(normalize_name(obs.en_name))
-        price = format_price(obs.price_exalted, divine_exalted)
+        price = obs.display_price
         if pair and price:
             matched.append(
                 {
@@ -433,7 +456,7 @@ def match_prices_to_base_items(
             }
             for future in as_completed(future_to_obs):
                 obs = future_to_obs[future]
-                price = format_price(obs.price_exalted, divine_exalted)
+                price = obs.display_price
                 try:
                     tc_name = future.result()
                 except Exception:
@@ -554,6 +577,8 @@ def main(argv: list[str]) -> int:
     base_pairs = load_base_item_pairs(args.en_baseitems, args.tc_baseitems)
     observations = collect_price_observations(scout["snapshot_pairs"])
     best = choose_best_prices(observations, scout["reference_currencies"])
+    divine_exalted = divine_price_exalted(best)
+    apply_display_prices(best, divine_exalted)
     rows, missing = match_prices_to_base_items(
         best,
         base_pairs,
@@ -593,7 +618,8 @@ def main(argv: list[str]) -> int:
         "unique_scout_items": len(best),
         "matched_items": len(rows),
         "missing_items": len(missing),
-        "divine_price_exalted": str(divine_price_exalted(best)),
+        "divine_price_exalted": str(divine_exalted),
+        "divine_exalted_ratio": divine_exalted_ratio_summary(divine_exalted),
         "poe2db_fallback": bool(args.poe2db_fallback),
     }
     (args.out_dir / "summary.json").write_text(
