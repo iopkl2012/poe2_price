@@ -391,11 +391,17 @@ def format_price(price_exalted: Decimal, divine_exalted: Decimal) -> str:
     return f"{price_exalted.quantize(Decimal('0.01'))}E"
 
 
+def is_reference_currency(obs: PriceObservation) -> bool:
+    return obs.api_id in {"divine", "exalted"}
+
+
 def apply_display_prices(
     prices: dict[str, PriceObservation], divine_exalted: Decimal
 ) -> None:
     for obs in prices.values():
-        obs.display_price = format_price(obs.price_exalted, divine_exalted)
+        obs.display_price = "" if is_reference_currency(obs) else format_price(
+            obs.price_exalted, divine_exalted
+        )
 
 
 def match_prices_to_base_items(
@@ -414,7 +420,7 @@ def match_prices_to_base_items(
     pending_poe2db: list[PriceObservation] = []
 
     for obs in prices.values():
-        if obs.price_exalted < Decimal("1"):
+        if obs.price_exalted < Decimal("1") or not obs.display_price:
             continue
         pair = by_en.get(obs.en_name) or by_en_norm.get(normalize_name(obs.en_name))
         price = obs.display_price
