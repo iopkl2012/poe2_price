@@ -219,6 +219,10 @@ function Copy-IntlRestorePackage {
             }
 
             if ($null -eq $SourceEntry) {
+                if (-not $RestoreEntryName.EndsWith("baseitemtypes.datc64", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    Write-Warning "Optional restore entry missing; it will be refreshed from clean game files on first update: $RestoreEntryName"
+                    continue
+                }
                 throw "Missing clean restore entry: $RestoreEntryName"
             }
 
