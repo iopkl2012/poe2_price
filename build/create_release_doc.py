@@ -13,6 +13,20 @@ DOC_PATHS = [
     ROOT / "发布版" / "物价补丁" / "使用文档.docx",
 ]
 OUT_DIR = ROOT / "output" / "doc"
+TEMPLATE_DOC = ROOT / "docs" / "使用文档.docx"
+
+
+def copy_template_doc() -> bool:
+    if not TEMPLATE_DOC.exists():
+        return False
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    targets = [OUT_DIR / "使用文档.docx", *DOC_PATHS]
+    for path in targets:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(TEMPLATE_DOC, path)
+        print(path)
+    return True
 
 
 def set_font(run, name="Microsoft YaHei"):
@@ -56,6 +70,9 @@ def nums(doc, items):
 
 
 def build():
+    if copy_template_doc():
+        return
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     doc = Document()
     sec = doc.sections[0]
