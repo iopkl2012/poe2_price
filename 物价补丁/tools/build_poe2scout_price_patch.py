@@ -309,7 +309,12 @@ def append_utf16le_string(output: bytearray, layout: DatLayout, text: str) -> in
 
 
 def strip_existing_price(name: str) -> str:
-    return re.sub(r"=[0-9]+(?:\.[0-9]+)?[DE]$", "", name).strip()
+    name = re.sub(r"\s*\[[0-9]+(?:\.[0-9]+)?[DE]\]$", "", name)
+    return re.sub(r"=[^\r\n]*$", "", name).strip()
+
+
+def format_unique_price_name(base_name: str, price: str) -> str:
+    return f"{base_name}\n[{price}]"
 
 
 def patch_unique_word_prices(
@@ -354,7 +359,7 @@ def patch_unique_word_prices(
             )
             continue
         base_name = strip_existing_price(entry.display_name)
-        new_name = f"{base_name}{separator}{obs.display_price}"
+        new_name = format_unique_price_name(base_name, obs.display_price)
         new_offset = append_utf16le_string(output, layout, new_name)
         struct.pack_into("<I", output, entry.display_pointer_pos, new_offset)
         patched_rows.add(unique.row_index)
