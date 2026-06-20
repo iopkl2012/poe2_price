@@ -339,13 +339,9 @@ def strip_existing_price(name: str) -> str:
     return re.sub(r"=[^\r\n]*$", "", name).strip()
 
 
-def format_markup_price_name(base_name: str, price: str) -> str:
-    return f"[{price}|{base_name}]"
-
-
 def format_unique_price_name(base_name: str, price: str, label_mode: str) -> str:
     if label_mode == "markup":
-        return format_markup_price_name(base_name, price)
+        return f"[{price}|{base_name}]"
     if label_mode == "newline":
         return f"{base_name}\n[{price}]"
     if label_mode == "overlay":
@@ -805,7 +801,7 @@ def match_prices_to_base_items(
                     "metadata_path": pair.metadata_path,
                     "name": pair.tc_name,
                     "price": price,
-                    "new_name": format_markup_price_name(pair.tc_name, price),
+                    "new_name": "",
                     "en_name": obs.en_name,
                     "api_id": obs.api_id,
                     "price_exalted": str(obs.price_exalted),
@@ -843,7 +839,7 @@ def match_prices_to_base_items(
                             "metadata_path": pair.metadata_path,
                             "name": pair.tc_name,
                             "price": price,
-                            "new_name": format_markup_price_name(pair.tc_name, price),
+                            "new_name": "",
                             "en_name": obs.en_name,
                             "api_id": obs.api_id,
                             "price_exalted": str(obs.price_exalted),
