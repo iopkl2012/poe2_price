@@ -66,7 +66,15 @@ DEFAULT_UNIQUE_GOLD_PRICES = (
 )
 DEFAULT_PATCH_SCRIPT = Path(__file__).with_name("poe2_name_price_patch.py")
 DISPLAY_NAME_FIELD_INDEX = 8
-DEFAULT_UNIQUE_CATEGORIES = ("accessory", "armour", "weapon")
+DEFAULT_UNIQUE_CATEGORIES = (
+    "accessory",
+    "armour",
+    "flask",
+    "jewel",
+    "map",
+    "weapon",
+    "sanctum",
+)
 WORDS_ROW_SIZE = 64
 WORDS_EN_NAME_OFFSET = 4
 WORDS_DISPLAY_NAME_OFFSET = 48
