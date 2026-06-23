@@ -326,8 +326,13 @@ function Test-BaseItemsLookPatched {
     try {
         $Python = Ensure-PythonRequests -RepoRoot $RepoRoot
         $ExportScript = Join-Path $CodeToolsRoot "poe2_name_price_patch.py"
-        & $Python $ExportScript export --source $SourceDat --output $TempCsv *> $null
-        if ($LASTEXITCODE -ne 0) {
+        $ExportResult = Invoke-Poe2Python -Python $Python -ArgumentList @(
+            $ExportScript,
+            "export",
+            "--source", $SourceDat,
+            "--output", $TempCsv
+        ) -Quiet
+        if ($ExportResult.ExitCode -ne 0) {
             return $true
         }
         $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8
@@ -377,9 +382,14 @@ function Get-BaseItemsMetadataSignature {
     try {
         $Python = Ensure-PythonRequests -RepoRoot $RepoRoot
         $ExportScript = Join-Path $CodeToolsRoot "poe2_name_price_patch.py"
-        & $Python $ExportScript export --source $SourceDat --output $TempCsv *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "导出 BaseItemTypes 元数据签名失败。退出码：$LASTEXITCODE"
+        $ExportResult = Invoke-Poe2Python -Python $Python -ArgumentList @(
+            $ExportScript,
+            "export",
+            "--source", $SourceDat,
+            "--output", $TempCsv
+        ) -Quiet
+        if ($ExportResult.ExitCode -ne 0) {
+            throw "导出 BaseItemTypes 元数据签名失败。退出码：$($ExportResult.ExitCode)`n$($ExportResult.Text)"
         }
 
         $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8
@@ -1254,9 +1264,9 @@ if ($IsChinaClient) {
     )
 }
 
-& $Python @BuildArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "Price fetch or patch build failed. Exit code: $LASTEXITCODE"
+$BuildResult = Invoke-Poe2Python -Python $Python -ArgumentList $BuildArgs
+if ($BuildResult.ExitCode -ne 0) {
+    throw "Price fetch or patch build failed. Exit code: $($BuildResult.ExitCode)"
 }
 
 Assert-File $PatchZip $PricePatchZipName

@@ -44,8 +44,13 @@ function Test-BaseItemsLookPatched {
     try {
         $Python = Ensure-PythonRequests -RepoRoot $RepoRoot
         $ExportScript = Join-Path $CodeToolsRoot "poe2_name_price_patch.py"
-        & $Python $ExportScript export --source $SourceDat --output $TempCsv *> $null
-        if ($LASTEXITCODE -ne 0) {
+        $ExportResult = Invoke-Poe2Python -Python $Python -ArgumentList @(
+            $ExportScript,
+            "export",
+            "--source", $SourceDat,
+            "--output", $TempCsv
+        ) -Quiet
+        if ($ExportResult.ExitCode -ne 0) {
             return $true
         }
         $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8
@@ -77,9 +82,14 @@ function Get-BaseItemsMetadataSignature {
     try {
         $Python = Ensure-PythonRequests -RepoRoot $RepoRoot
         $ExportScript = Join-Path $CodeToolsRoot "poe2_name_price_patch.py"
-        & $Python $ExportScript export --source $SourceDat --output $TempCsv *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to export BaseItemTypes metadata signature. Exit code: $LASTEXITCODE"
+        $ExportResult = Invoke-Poe2Python -Python $Python -ArgumentList @(
+            $ExportScript,
+            "export",
+            "--source", $SourceDat,
+            "--output", $TempCsv
+        ) -Quiet
+        if ($ExportResult.ExitCode -ne 0) {
+            throw "Failed to export BaseItemTypes metadata signature. Exit code: $($ExportResult.ExitCode)`n$($ExportResult.Text)"
         }
 
         $Rows = Import-Csv -LiteralPath $TempCsv -Encoding UTF8

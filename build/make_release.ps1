@@ -274,7 +274,7 @@ function Test-PortablePython {
         return $false
     }
 
-    & $PythonPath -c "import requests, urllib3, certifi, idna, charset_normalizer, ssl" 2>$null
+    & $PythonPath -c "import requests, urllib3, certifi, idna, charset_normalizer, chardet, ssl" 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -422,7 +422,8 @@ function Prepare-PythonRuntime {
         "urllib3==2.5.0",
         "certifi==2025.6.15",
         "idna==3.10",
-        "charset-normalizer==3.4.2"
+        "charset-normalizer==3.4.2",
+        "chardet==5.2.0"
     )
 
     $TargetPython = Join-Path $TargetDir "python.exe"
@@ -616,7 +617,7 @@ function Test-ReleaseFolder {
     Invoke-Checked -FilePath (Join-Path $ReleaseToolsDir "dotnet-runtime\dotnet.exe") -ArgumentList @("--list-runtimes")
     Invoke-Checked -FilePath (Join-Path $ReleaseToolsDir "python\python.exe") -ArgumentList @(
         "-c",
-        "import requests, urllib3, certifi, idna, charset_normalizer, ssl; print('python ok')"
+        "import requests, urllib3, certifi, idna, charset_normalizer, chardet, ssl; print('python ok')"
     )
 }
 

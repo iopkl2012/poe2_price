@@ -572,21 +572,91 @@ function Ensure-DotNet8Runtime {
     return Install-LocalDotNet8Runtime -RepoRoot $RepoRoot
 }
 
+function Set-Poe2PythonEnvironment {
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:PYTHONUTF8 = "1"
+}
+
+function Invoke-Poe2Python {
+    param(
+        [Parameter(Mandatory = $true)][string]$Python,
+        [string[]]$ArgumentList = @(),
+        [switch]$Quiet
+    )
+
+    Set-Poe2PythonEnvironment
+    $OldErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Output = & $Python @ArgumentList 2>&1
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $OldErrorActionPreference
+    }
+
+    $Lines = @($Output | ForEach-Object { [string]$_ })
+    if (-not $Quiet) {
+        foreach ($Line in $Lines) {
+            Write-Host $Line
+        }
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Lines    = $Lines
+        Text     = ($Lines -join "`n")
+    }
+}
+
+function Test-Poe2PythonPackages {
+    param([Parameter(Mandatory = $true)][string]$Python)
+
+    $CheckCode = @"
+import importlib.util
+import ssl
+import sys
+
+missing = []
+for name in ('urllib3', 'certifi', 'idna'):
+    if importlib.util.find_spec(name) is None:
+        missing.append(name)
+
+if (
+    importlib.util.find_spec('charset_normalizer') is None
+    and importlib.util.find_spec('chardet') is None
+):
+    missing.append('charset_normalizer or chardet')
+
+if missing:
+    raise SystemExit('missing Python package(s): ' + ', '.join(missing))
+
+import requests
+import urllib3
+import certifi
+import idna
+"@
+
+    $Result = Invoke-Poe2Python -Python $Python -ArgumentList @("-c", $CheckCode) -Quiet
+    return ($Result.ExitCode -eq 0)
+}
+
 function Ensure-PythonRequests {
     param([string]$RepoRoot = "")
+
+    Set-Poe2PythonEnvironment
 
     if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
         $LocalPython = Join-Path $RepoRoot "tools\python\python.exe"
         if (Test-Path -LiteralPath $LocalPython -PathType Leaf) {
-            & $LocalPython -c "import requests, urllib3, ssl" 2>$null
-            if ($LASTEXITCODE -eq 0) {
+            if (Test-Poe2PythonPackages $LocalPython) {
                 return $LocalPython
             }
         }
     }
 
     if (Test-Poe2ReleaseMode) {
-        throw "发布包不完整：缺少可用的 tools\python\python.exe 或内置 Python 依赖，请重新打包发布版。"
+        throw "发布包不完整：缺少可用的 tools\python\python.exe 或内置 Python 依赖 requests/urllib3/certifi/idna/charset_normalizer/chardet，请重新下载完整发布包或重新打包发布版。"
     }
 
     $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
@@ -595,21 +665,19 @@ function Ensure-PythonRequests {
     }
 
     $Python = $PythonCommand.Source
-    & $Python -c "import requests, urllib3" 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-Poe2PythonPackages $Python) {
         return $Python
     }
 
     Write-Host ""
     Write-Host "==> Prepare Python requests package" -ForegroundColor Cyan
-    & $Python -m pip install -U requests urllib3 -i https://pypi.tuna.tsinghua.edu.cn/simple
+    & $Python -m pip install -U requests urllib3 certifi idna charset-normalizer chardet -i https://pypi.tuna.tsinghua.edu.cn/simple
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install Python packages requests and urllib3. Please check your network and run again."
+        throw "Failed to install Python packages requests, urllib3, certifi, idna, charset-normalizer and chardet. Please check your network and run again."
     }
 
-    & $Python -c "import requests, urllib3" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Python packages requests and urllib3 are still not usable after install."
+    if (-not (Test-Poe2PythonPackages $Python)) {
+        throw "Python packages requests, urllib3, certifi, idna, charset-normalizer and chardet are still not usable after install."
     }
 
     return $Python
